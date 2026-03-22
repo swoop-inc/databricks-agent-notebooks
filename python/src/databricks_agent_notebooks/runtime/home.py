@@ -29,7 +29,9 @@ class RuntimeHome:
 
 def resolve_runtime_home(env: Mapping[str, str] | None = None) -> RuntimeHome:
     """Resolve the managed runtime home using env override or platformdirs."""
-    env_map = dict(os.environ if env is None else env)
+    env_map = dict(os.environ)
+    if env is not None:
+        env_map.update(env)
     override = env_map.get(HOME_ENV_VAR)
     if override:
         root = Path(override)

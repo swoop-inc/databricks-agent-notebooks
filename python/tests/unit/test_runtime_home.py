@@ -27,6 +27,17 @@ def test_process_env_override_sets_runtime_home(tmp_path: Path, monkeypatch) -> 
     assert home.cache_dir == tmp_path / "process-home" / "cache"
 
 
+def test_explicit_env_mapping_falls_back_to_process_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(HOME_ENV_VAR, str(tmp_path / "process-home"))
+
+    with patch("databricks_agent_notebooks.runtime.home.PlatformDirs") as mock_platform_dirs:
+        mock_platform_dirs.return_value.user_data_path = "/tmp/dan-home"
+        home = resolve_runtime_home(env={})
+
+    assert home.root == tmp_path / "process-home"
+    assert home.cache_dir == tmp_path / "process-home" / "cache"
+
+
 def test_default_runtime_home_uses_platformdirs() -> None:
     with patch("databricks_agent_notebooks.runtime.home.PlatformDirs") as mock_platform_dirs:
         mock_platform_dirs.return_value.user_data_path = "/tmp/dan-home"
