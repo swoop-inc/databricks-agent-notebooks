@@ -7,3 +7,4 @@ python/.pytest_cache/
 python/dist/
 python/build/
 python/src/*.egg-info/
+docs/plans/

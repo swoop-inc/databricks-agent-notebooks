@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tomllib
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _tracked_files(*paths: str) -> list[Path]:
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "--", *paths],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [
+        repo_path
+        for line in result.stdout.splitlines()
+        if line and (repo_path := REPO_ROOT / line).exists()
+    ]
 
 
 def test_repo_has_monorepo_ready_root_layout() -> None:
@@ -107,3 +122,24 @@ def test_release_docs_only_make_verified_support_claims() -> None:
     assert "serverless" in matrix_text
     assert "not yet claimed" in matrix_text
     assert "planned" not in matrix_text.lower()
+
+
+def test_public_docs_exclude_private_plans_and_machine_specific_paths() -> None:
+    assert _tracked_files("docs/plans") == []
+
+    tracked_public_docs = [
+        path
+        for path in _tracked_files("README.md", "docs")
+        if path.suffix == ".md" and "docs/plans/" not in path.as_posix()
+    ]
+    forbidden_markers = ("/Users/", "worktrees/databricks-agent-notebooks")
+    offenders: list[str] = []
+
+    for path in tracked_public_docs:
+        text = path.read_text(encoding="utf-8")
+        rel_path = path.relative_to(REPO_ROOT)
+        offenders.extend(
+            f"{rel_path}: {marker}" for marker in forbidden_markers if marker in text
+        )
+
+    assert offenders == []
