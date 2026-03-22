@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from databricks_agent_notebooks.runtime.manifest import (
     KernelArtifactReceipt,
     LauncherKernelContract,
@@ -162,3 +164,24 @@ def test_read_json_record_normalizes_legacy_runtime_install_receipt(tmp_path: Pa
 
     assert restored.runtime_id == "dbr-16.4-python-3.12"
     assert restored.install_root == "data/runtimes/dbr-16.4-python-3.12"
+
+
+def test_read_json_record_rejects_runtime_install_receipt_missing_install_root(tmp_path: Path) -> None:
+    receipt_path = tmp_path / "runtime-receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "receipt_version": "1",
+                "runtime_id": "dbr-16.4-python-3.12",
+                "runtime_kind": "databricks-connect",
+                "databricks_line": "16.4",
+                "python_line": "3.12",
+                "installed_at": "2026-03-22T12:00:00+00:00",
+                "status": "materialized",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TypeError, match="install_root"):
+        read_json_record(receipt_path, RuntimeInstallReceipt)

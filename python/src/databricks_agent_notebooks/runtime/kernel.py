@@ -547,6 +547,10 @@ def verify_kernel(
                 issues.append("kernel receipt install_dir does not match kernel directory")
             if contract is not None and receipt.runtime_id and receipt.runtime_id != contract.runtime_id:
                 issues.append("kernel receipt runtime_id does not match launcher contract")
+            if runtime_receipt_path is None and receipt.runtime_receipt_path:
+                runtime_receipt_path = Path(receipt.runtime_receipt_path)
+                if not runtime_receipt_path.is_file():
+                    issues.append(f"runtime receipt not found: {runtime_receipt_path}")
             if runtime_receipt_path is not None and receipt.runtime_receipt_path and not _paths_refer_to_same_location(
                 runtime_receipt_path,
                 receipt.runtime_receipt_path,

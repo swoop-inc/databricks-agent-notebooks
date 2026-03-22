@@ -77,10 +77,8 @@ class RuntimeInstallReceipt:
         *,
         source_path: Path | None = None,
     ) -> "RuntimeInstallReceipt":
-        defaults: dict[str, Any] = {}
-        if source_path is not None:
-            defaults["install_root"] = str(source_path.parent)
-        return cls(**_normalized_dataclass_payload(cls, data, defaults=defaults))
+        del source_path
+        return cls(**_normalized_dataclass_payload(cls, data))
 
 
 @dataclass(frozen=True)
