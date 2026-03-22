@@ -164,10 +164,19 @@ def test_doctor_command_prints_failures(capsys) -> None:
         result = main(["doctor", "--profile", "DEFAULT"])
 
     assert result == 1
-    run_checks.assert_called_once_with(profile="DEFAULT")
+    run_checks.assert_called_once_with(profile="DEFAULT", kernel_id=KERNEL_ID)
     captured = capsys.readouterr()
     assert "[FAIL] kernel" in captured.out
     assert "1 check(s) failed." in captured.err
+
+
+def test_doctor_command_accepts_custom_kernel_id(capsys) -> None:
+    with patch("databricks_agent_notebooks.cli.run_checks", return_value=[]) as run_checks:
+        result = main(["doctor", "--id", "custom-scala", "--profile", "DEFAULT"])
+
+    assert result == 0
+    run_checks.assert_called_once_with(profile="DEFAULT", kernel_id="custom-scala")
+    assert "All checks passed." in capsys.readouterr().out
 
 
 def test_kernels_doctor_command_prints_failures(capsys) -> None:
@@ -180,8 +189,26 @@ def test_kernels_doctor_command_prints_failures(capsys) -> None:
         result = main(["kernels", "doctor", "--profile", "DEFAULT"])
 
     assert result == 1
-    run_checks.assert_called_once_with(profile="DEFAULT")
+    run_checks.assert_called_once_with(profile="DEFAULT", kernel_id=KERNEL_ID)
     captured = capsys.readouterr()
     assert "[FAIL] kernel_semantics" in captured.out
     assert "launcher contract missing" in captured.out
     assert "1 check(s) failed." in captured.err
+
+
+def test_kernels_doctor_command_accepts_custom_kernel_id(tmp_path: Path, capsys) -> None:
+    with patch("databricks_agent_notebooks.cli.run_checks", return_value=[]) as run_checks:
+        result = main(
+            [
+                "kernels",
+                "doctor",
+                "--id",
+                "custom-scala",
+                "--jupyter-path",
+                str(tmp_path / "kernels"),
+            ]
+        )
+
+    assert result == 0
+    run_checks.assert_called_once_with(profile=None, kernels_dir=tmp_path / "kernels", kernel_id="custom-scala")
+    assert "All checks passed." in capsys.readouterr().out

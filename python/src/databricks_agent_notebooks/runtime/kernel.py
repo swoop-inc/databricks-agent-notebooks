@@ -325,11 +325,13 @@ def patch_kernel_json(
 
 def verify_kernel(
     kernels_dir: Path | None = None,
+    *,
+    kernel_id: str = KERNEL_ID,
     env: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Return validation issues for the managed kernel."""
     target_dir = resolve_kernels_dir(kernels_dir=kernels_dir, env=env)
-    kernel_dir = target_dir / KERNEL_ID
+    kernel_dir = target_dir / kernel_id
     issues: list[str] = []
 
     if not kernel_dir.is_dir():
@@ -361,9 +363,9 @@ def verify_kernel(
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
             issues.append(f"launcher contract invalid: {exc}")
         else:
-            if contract.kernel_id != KERNEL_ID:
+            if contract.kernel_id != kernel_id:
                 issues.append(
-                    f"launcher contract kernel_id mismatch: expected {KERNEL_ID}, found {contract.kernel_id}"
+                    f"launcher contract kernel_id mismatch: expected {kernel_id}, found {contract.kernel_id}"
                 )
             if contract.argv != [str(part) for part in argv]:
                 issues.append("launcher contract argv does not match kernel.json")
@@ -380,9 +382,9 @@ def verify_kernel(
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
             issues.append(f"kernel receipt invalid: {exc}")
         else:
-            if receipt.kernel_id != KERNEL_ID:
+            if receipt.kernel_id != kernel_id:
                 issues.append(
-                    f"kernel receipt kernel_id mismatch: expected {KERNEL_ID}, found {receipt.kernel_id}"
+                    f"kernel receipt kernel_id mismatch: expected {kernel_id}, found {receipt.kernel_id}"
                 )
             if receipt.install_dir != str(kernel_dir):
                 issues.append("kernel receipt install_dir does not match kernel directory")

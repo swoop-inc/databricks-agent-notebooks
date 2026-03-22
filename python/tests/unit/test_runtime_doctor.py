@@ -130,6 +130,70 @@ def test_check_kernel_semantics_requires_launcher_contract(tmp_path: Path) -> No
 
     assert check.status == "fail"
     assert "launcher contract" in check.message.lower()
+    assert "kernels install --force" in check.message
+
+
+def test_check_kernel_semantics_supports_custom_kernel_id(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.doctor import check_kernel_semantics
+    from databricks_agent_notebooks.runtime.kernel import ADD_OPENS_FLAG
+
+    home = _make_runtime_home(tmp_path / "runtime-home")
+    kernel_id = "custom-scala"
+    kernel_dir = home.kernels_dir / kernel_id
+    kernel_dir.mkdir(parents=True)
+    contract_path = kernel_dir / "launcher-contract.json"
+    receipt_path = home.installations_dir / "kernels" / f"{kernel_id}.json"
+    receipt_path.parent.mkdir(parents=True)
+    (kernel_dir / "kernel.json").write_text(
+        json.dumps(
+            {
+                "argv": ["/usr/bin/java", ADD_OPENS_FLAG, "coursier", "--connection-file", "{connection_file}"],
+                "display_name": "Custom Scala",
+                "language": "scala",
+                "env": {"SPARK_HOME": ""},
+                "metadata": {
+                    "databricks_agent_notebooks": {
+                        "launcher_contract_path": str(contract_path),
+                        "receipt_path": str(receipt_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    contract_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "1",
+                "kernel_id": kernel_id,
+                "display_name": "Custom Scala",
+                "language": "scala",
+                "argv": ["/usr/bin/java", ADD_OPENS_FLAG, "coursier", "--connection-file", "{connection_file}"],
+                "env": {"SPARK_HOME": ""},
+                "runtime_id": kernel_id,
+                "launcher_path": "/usr/bin/java",
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "receipt_version": "1",
+                "kernel_id": kernel_id,
+                "display_name": "Custom Scala",
+                "language": "scala",
+                "install_dir": str(kernel_dir),
+                "launcher_contract_path": str(contract_path),
+                "installed_at": "2026-03-22T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    check = check_kernel_semantics(home=home, kernel_id=kernel_id)
+
+    assert check.status == "ok"
 
 
 def test_check_profile_default_requires_real_default_entries(tmp_path: Path) -> None:

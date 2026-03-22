@@ -5,6 +5,7 @@ from __future__ import annotations
 import configparser
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -13,8 +14,6 @@ from pathlib import Path
 
 from databricks_agent_notebooks.runtime.home import RuntimeHome, resolve_runtime_home
 from databricks_agent_notebooks.runtime.kernel import KERNEL_ID, verify_kernel
-
-_INSTALL_COMMAND = "agent-notebook kernels install"
 
 
 @dataclass(frozen=True)
@@ -50,9 +49,18 @@ def kernel_search_dirs(
     return deduped
 
 
-def _find_managed_kernel_dir(search_dirs: list[Path]) -> Path | None:
+def _install_command(kernel_id: str, *, force: bool = False) -> str:
+    parts = ["agent-notebook", "kernels", "install"]
+    if force:
+        parts.append("--force")
+    if kernel_id != KERNEL_ID:
+        parts.extend(["--id", kernel_id])
+    return shlex.join(parts)
+
+
+def _find_managed_kernel_dir(search_dirs: list[Path], kernel_id: str = KERNEL_ID) -> Path | None:
     for kernels_dir in search_dirs:
-        kernel_dir = kernels_dir / KERNEL_ID
+        kernel_dir = kernels_dir / kernel_id
         if kernel_dir.is_dir():
             return kernel_dir
     return None
@@ -82,9 +90,10 @@ def check_coursier() -> Check:
 def check_kernel(
     home: RuntimeHome | None = None,
     kernels_dir: Path | None = None,
+    kernel_id: str = KERNEL_ID,
 ) -> Check:
     search_dirs = kernel_search_dirs(home=home, kernels_dir=kernels_dir)
-    kernel_dir = _find_managed_kernel_dir(search_dirs)
+    kernel_dir = _find_managed_kernel_dir(search_dirs, kernel_id=kernel_id)
     if kernel_dir is not None:
         return Check("kernel", "ok", f"Managed kernel found: {kernel_dir}")
 
@@ -93,26 +102,27 @@ def check_kernel(
         return Check(
             "kernel",
             "warn",
-            f"found '{fallback_name}' but not '{KERNEL_ID}' — run '{_INSTALL_COMMAND}'",
+            f"found '{fallback_name}' but not '{kernel_id}' — run '{_install_command(kernel_id)}'",
         )
 
-    return Check("kernel", "fail", f"managed kernel '{KERNEL_ID}' not found — run '{_INSTALL_COMMAND}'")
+    return Check("kernel", "fail", f"managed kernel '{kernel_id}' not found — run '{_install_command(kernel_id)}'")
 
 
 def check_kernel_semantics(
     home: RuntimeHome | None = None,
     kernels_dir: Path | None = None,
+    kernel_id: str = KERNEL_ID,
 ) -> Check:
     search_dirs = kernel_search_dirs(home=home, kernels_dir=kernels_dir)
-    kernel_dir = _find_managed_kernel_dir(search_dirs)
+    kernel_dir = _find_managed_kernel_dir(search_dirs, kernel_id=kernel_id)
     if kernel_dir is None:
         return Check(
             "kernel_semantics",
             "fail",
-            f"managed kernel '{KERNEL_ID}' not found — run '{_INSTALL_COMMAND}'",
+            f"managed kernel '{kernel_id}' not found — run '{_install_command(kernel_id)}'",
         )
 
-    issues = verify_kernel(kernel_dir.parent)
+    issues = verify_kernel(kernel_dir.parent, kernel_id=kernel_id)
     if not issues:
         return Check(
             "kernel_semantics",
@@ -120,7 +130,11 @@ def check_kernel_semantics(
             "kernel semantics verified: required JVM flag present and SPARK_HOME cleared",
         )
 
-    return Check("kernel_semantics", "fail", "; ".join(issues))
+    return Check(
+        "kernel_semantics",
+        "fail",
+        f"{'; '.join(issues)} — run '{_install_command(kernel_id, force=True)}'",
+    )
 
 
 def check_spark_home(environ: Mapping[str, str] | None = None) -> Check:
@@ -208,14 +222,15 @@ def check_java() -> Check:
 def run_checks(
     profile: str | None = None,
     kernels_dir: Path | None = None,
+    kernel_id: str = KERNEL_ID,
     env: Mapping[str, str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> list[Check]:
     home = resolve_runtime_home(env)
     checks = [
         check_coursier(),
-        check_kernel(home=home, kernels_dir=kernels_dir),
-        check_kernel_semantics(home=home, kernels_dir=kernels_dir),
+        check_kernel(home=home, kernels_dir=kernels_dir, kernel_id=kernel_id),
+        check_kernel_semantics(home=home, kernels_dir=kernels_dir, kernel_id=kernel_id),
         check_spark_home(environ=environ),
         check_databricks_cli(),
         check_java(),

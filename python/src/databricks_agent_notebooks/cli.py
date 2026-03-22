@@ -109,6 +109,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     kernels_doctor = kernel_subparsers.add_parser("doctor", help="Validate kernel installation and environment")
+    kernels_doctor.add_argument("--id", default=KERNEL_ID, help="Kernel identifier to validate")
     kernels_doctor.add_argument("--profile", default=None, help="Databricks CLI profile to validate")
     kernels_doctor.add_argument("--jupyter-path", default=None, help="Validate an explicit Jupyter kernels directory")
     kernels_doctor.add_argument("--kernels-dir", default=None, help=argparse.SUPPRESS)
@@ -121,6 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # -- doctor --
     doctor = subparsers.add_parser("doctor", help="Validate environment for Databricks Connect")
+    doctor.add_argument("--id", default=KERNEL_ID, help="Kernel identifier to validate")
     doctor.add_argument("--profile", default=None, help="Databricks CLI profile to validate")
 
     # -- help --
@@ -385,9 +387,9 @@ def _cmd_kernels_doctor(args: argparse.Namespace) -> int:
     """Run environment validation checks."""
     kernel_dirs = _resolve_kernel_dir_args(args)
     if kernel_dirs:
-        checks = run_checks(profile=args.profile, kernels_dir=kernel_dirs[0])
+        checks = run_checks(profile=args.profile, kernels_dir=kernel_dirs[0], kernel_id=getattr(args, "id", KERNEL_ID))
     else:
-        checks = run_checks(profile=args.profile)
+        checks = run_checks(profile=args.profile, kernel_id=getattr(args, "id", KERNEL_ID))
 
     status_symbols = {"ok": "[ok]", "warn": "[!!]", "fail": "[FAIL]"}
 

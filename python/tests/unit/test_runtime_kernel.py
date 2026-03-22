@@ -257,6 +257,55 @@ def test_verify_kernel_reports_missing_contract_artifacts(tmp_path: Path) -> Non
     assert any("receipt" in issue.lower() for issue in issues)
 
 
+def test_verify_kernel_supports_custom_kernel_id(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.kernel import ADD_OPENS_FLAG, verify_kernel
+
+    kernel_id = "custom-scala"
+    kernel_dir = tmp_path / kernel_id
+    kernel_dir.mkdir()
+    contract_path = kernel_dir / "launcher-contract.json"
+    receipt_path = tmp_path / "state" / "installations" / "kernels" / f"{kernel_id}.json"
+    receipt_path.parent.mkdir(parents=True)
+
+    kernel_json = {
+        "argv": ["/usr/bin/java", ADD_OPENS_FLAG, "coursier", "--connection-file", "{connection_file}"],
+        "display_name": "Custom Scala",
+        "language": "scala",
+        "env": {"SPARK_HOME": ""},
+        "metadata": {
+            "databricks_agent_notebooks": {
+                "launcher_contract_path": str(contract_path),
+                "receipt_path": str(receipt_path),
+            }
+        },
+    }
+    contract = {
+        "contract_version": "1",
+        "kernel_id": kernel_id,
+        "display_name": "Custom Scala",
+        "language": "scala",
+        "argv": kernel_json["argv"],
+        "env": kernel_json["env"],
+        "runtime_id": kernel_id,
+        "launcher_path": "/usr/bin/java",
+    }
+    receipt = {
+        "receipt_version": "1",
+        "kernel_id": kernel_id,
+        "display_name": "Custom Scala",
+        "language": "scala",
+        "install_dir": str(kernel_dir),
+        "launcher_contract_path": str(contract_path),
+        "installed_at": "2026-03-22T00:00:00+00:00",
+    }
+
+    (kernel_dir / "kernel.json").write_text(json.dumps(kernel_json), encoding="utf-8")
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    assert verify_kernel(tmp_path, kernel_id=kernel_id) == []
+
+
 def test_list_installed_kernels_reports_runtime_home_and_overrides(tmp_path: Path) -> None:
     from databricks_agent_notebooks.runtime.kernel import list_installed_kernels
 
