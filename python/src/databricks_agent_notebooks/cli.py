@@ -338,11 +338,12 @@ def _cmd_kernels_list(args: argparse.Namespace) -> int:
         print("No kernels installed.")
         return 0
 
-    print(f"{'NAME':<24} {'SOURCE':<20} {'CONTRACT':<18} {'RECEIPT':<18} DIRECTORY")
+    print(f"{'NAME':<24} {'SOURCE':<20} {'LAUNCHER':<18} {'CONTRACT':<18} {'RECEIPT':<18} DIRECTORY")
     for kernel in kernels:
+        launcher = kernel.launcher_path or "missing"
         contract = str(kernel.launcher_contract_path) if kernel.launcher_contract_path is not None else "missing"
         receipt = str(kernel.receipt_path) if kernel.receipt_path is not None else "missing"
-        print(f"{kernel.name:<24} {kernel.source:<20} {contract:<18} {receipt:<18} {kernel.directory}")
+        print(f"{kernel.name:<24} {kernel.source:<20} {launcher:<18} {contract:<18} {receipt:<18} {kernel.directory}")
     return 0
 
 

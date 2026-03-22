@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,11 +25,13 @@ def _make_runtime_home(root: Path) -> RuntimeHome:
 
 
 def test_patch_kernel_json_adds_flag_and_clears_spark_home(tmp_path: Path) -> None:
-    from databricks_agent_notebooks.runtime.kernel import ADD_OPENS_FLAG, patch_kernel_json
+    from databricks_agent_notebooks.runtime.kernel import CONTRACT_FILENAME, patch_kernel_json
 
     kernel_dir = tmp_path / "scala212-dbr-connect"
     kernel_dir.mkdir()
     kernel_json = kernel_dir / "kernel.json"
+    contract_path = kernel_dir / CONTRACT_FILENAME
+    receipt_path = tmp_path / "state" / "installations" / "kernels" / "scala212-dbr-connect.json"
     kernel_json.write_text(
         json.dumps(
             {
@@ -39,14 +42,23 @@ def test_patch_kernel_json_adds_flag_and_clears_spark_home(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    patch_kernel_json(kernel_dir)
-    patch_kernel_json(kernel_dir)
+    patch_kernel_json(kernel_dir, contract_path=contract_path, receipt_path=receipt_path)
+    patch_kernel_json(kernel_dir, contract_path=contract_path, receipt_path=receipt_path)
 
     data = json.loads(kernel_json.read_text(encoding="utf-8"))
-    assert data["argv"][1] == ADD_OPENS_FLAG
-    assert data["argv"].count(ADD_OPENS_FLAG) == 1
-    assert data["env"]["EXISTING"] == "1"
-    assert data["env"]["SPARK_HOME"] == ""
+    assert data["argv"] == [
+        sys.executable,
+        "-m",
+        "databricks_agent_notebooks.runtime.launcher",
+        "--launcher-contract",
+        str(contract_path),
+        "--connection-file",
+        "{connection_file}",
+    ]
+    assert data.get("env", {}) == {}
+    metadata = data["metadata"]["databricks_agent_notebooks"]
+    assert metadata["launcher_contract_path"] == str(contract_path)
+    assert metadata["receipt_path"] == str(receipt_path)
 
 
 def test_patch_kernel_json_records_contract_and_receipt_metadata(tmp_path: Path) -> None:
@@ -78,10 +90,12 @@ def test_patch_kernel_json_records_contract_and_receipt_metadata(tmp_path: Path)
     metadata = data["metadata"]["databricks_agent_notebooks"]
     assert metadata["launcher_contract_path"] == str(contract_path)
     assert metadata["receipt_path"] == str(receipt_path)
+    assert data["argv"][0] == sys.executable
 
 
 def test_install_kernel_uses_runtime_home_by_default(tmp_path: Path) -> None:
     from databricks_agent_notebooks.runtime.kernel import (
+        ADD_OPENS_FLAG,
         KERNEL_DISPLAY_NAME,
         KERNEL_ID,
         CONTRACT_FILENAME,
@@ -140,10 +154,30 @@ def test_install_kernel_uses_runtime_home_by_default(tmp_path: Path) -> None:
 
     assert contract["kernel_id"] == KERNEL_ID
     assert contract["display_name"] == KERNEL_DISPLAY_NAME
-    assert contract["env"]["SPARK_HOME"] == ""
+    assert contract["argv"] == [
+        sys.executable,
+        "-m",
+        "databricks_agent_notebooks.runtime.launcher",
+        "--launcher-contract",
+        str(kernel_dir / CONTRACT_FILENAME),
+        "--connection-file",
+        "{connection_file}",
+    ]
+    assert contract["env"] == {}
+    assert contract["launcher_path"] == sys.executable
+    assert contract["bootstrap_argv"] == [
+        "/usr/bin/java",
+        ADD_OPENS_FLAG,
+        "coursier",
+        "--connection-file",
+        "{connection_file}",
+    ]
     assert receipt["kernel_id"] == KERNEL_ID
     assert receipt["launcher_contract_path"] == str(kernel_dir / CONTRACT_FILENAME)
     assert receipt["install_dir"] == str(kernel_dir)
+    kernel_json = json.loads((kernel_dir / "kernel.json").read_text(encoding="utf-8"))
+    assert kernel_json["argv"] == contract["argv"]
+    assert kernel_json.get("env", {}) == {}
 
 
 def test_install_kernel_requires_coursier(tmp_path: Path) -> None:
@@ -230,22 +264,30 @@ def test_verify_kernel_reports_missing_launcher_semantics(tmp_path: Path) -> Non
 
     issues = verify_kernel(tmp_path)
 
-    assert any("add-opens" in issue.lower() for issue in issues)
+    assert any("launcher" in issue.lower() for issue in issues)
     assert any("SPARK_HOME" in issue for issue in issues)
 
 
 def test_verify_kernel_reports_missing_contract_artifacts(tmp_path: Path) -> None:
-    from databricks_agent_notebooks.runtime.kernel import KERNEL_DISPLAY_NAME, KERNEL_ID, verify_kernel
+    from databricks_agent_notebooks.runtime.kernel import CONTRACT_FILENAME, KERNEL_DISPLAY_NAME, KERNEL_ID, verify_kernel
 
     kernel_dir = tmp_path / KERNEL_ID
     kernel_dir.mkdir()
     (kernel_dir / "kernel.json").write_text(
         json.dumps(
             {
-                "argv": ["/usr/bin/java", "--add-opens=java.base/java.nio=ALL-UNNAMED", "coursier", "--connection-file", "{connection_file}"],
+                "argv": [
+                    sys.executable,
+                    "-m",
+                    "databricks_agent_notebooks.runtime.launcher",
+                    "--launcher-contract",
+                    str(kernel_dir / CONTRACT_FILENAME),
+                    "--connection-file",
+                    "{connection_file}",
+                ],
                 "display_name": KERNEL_DISPLAY_NAME,
                 "language": "scala",
-                "env": {"SPARK_HOME": ""},
+                "env": {},
             }
         ),
         encoding="utf-8",
@@ -258,7 +300,7 @@ def test_verify_kernel_reports_missing_contract_artifacts(tmp_path: Path) -> Non
 
 
 def test_verify_kernel_supports_custom_kernel_id(tmp_path: Path) -> None:
-    from databricks_agent_notebooks.runtime.kernel import ADD_OPENS_FLAG, verify_kernel
+    from databricks_agent_notebooks.runtime.kernel import verify_kernel
 
     kernel_id = "custom-scala"
     kernel_dir = tmp_path / kernel_id
@@ -268,10 +310,18 @@ def test_verify_kernel_supports_custom_kernel_id(tmp_path: Path) -> None:
     receipt_path.parent.mkdir(parents=True)
 
     kernel_json = {
-        "argv": ["/usr/bin/java", ADD_OPENS_FLAG, "coursier", "--connection-file", "{connection_file}"],
+        "argv": [
+            sys.executable,
+            "-m",
+            "databricks_agent_notebooks.runtime.launcher",
+            "--launcher-contract",
+            str(contract_path),
+            "--connection-file",
+            "{connection_file}",
+        ],
         "display_name": "Custom Scala",
         "language": "scala",
-        "env": {"SPARK_HOME": ""},
+        "env": {},
         "metadata": {
             "databricks_agent_notebooks": {
                 "launcher_contract_path": str(contract_path),
@@ -285,9 +335,16 @@ def test_verify_kernel_supports_custom_kernel_id(tmp_path: Path) -> None:
         "display_name": "Custom Scala",
         "language": "scala",
         "argv": kernel_json["argv"],
-        "env": kernel_json["env"],
+        "env": {},
         "runtime_id": kernel_id,
-        "launcher_path": "/usr/bin/java",
+        "launcher_path": sys.executable,
+        "bootstrap_argv": [
+            "/usr/bin/java",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "coursier",
+            "--connection-file",
+            "{connection_file}",
+        ],
     }
     receipt = {
         "receipt_version": "1",
@@ -328,7 +385,36 @@ def test_list_installed_kernels_reports_runtime_home_and_overrides(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    runtime_contract.write_text("{}", encoding="utf-8")
+    runtime_contract.write_text(
+        json.dumps(
+            {
+                "contract_version": "1",
+                "kernel_id": "scala212-dbr-connect",
+                "display_name": "Scala 2.12 (Databricks Connect)",
+                "language": "scala",
+                "argv": [
+                    sys.executable,
+                    "-m",
+                    "databricks_agent_notebooks.runtime.launcher",
+                    "--launcher-contract",
+                    str(runtime_contract),
+                    "--connection-file",
+                    "{connection_file}",
+                ],
+                "env": {},
+                "runtime_id": "scala212-dbr-connect",
+                "launcher_path": sys.executable,
+                "bootstrap_argv": [
+                    "/usr/bin/java",
+                    "--add-opens=java.base/java.nio=ALL-UNNAMED",
+                    "coursier",
+                    "--connection-file",
+                    "{connection_file}",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     runtime_receipt.parent.mkdir(parents=True)
     runtime_receipt.write_text("{}", encoding="utf-8")
 
@@ -349,6 +435,34 @@ def test_list_installed_kernels_reports_runtime_home_and_overrides(tmp_path: Pat
         ),
         encoding="utf-8",
     )
+    (override_kernel / "launcher-contract.json").write_text(
+        json.dumps(
+            {
+                "contract_version": "1",
+                "kernel_id": "python3",
+                "display_name": "Python 3",
+                "language": "python",
+                "argv": [
+                    "/usr/bin/python3",
+                    "-m",
+                    "ipykernel_launcher",
+                    "-f",
+                    "{connection_file}",
+                ],
+                "env": {},
+                "runtime_id": "python3",
+                "launcher_path": "/usr/bin/python3",
+                "bootstrap_argv": [
+                    "/usr/bin/python3",
+                    "-m",
+                    "ipykernel_launcher",
+                    "-f",
+                    "{connection_file}",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     with patch("databricks_agent_notebooks.runtime.kernel.resolve_runtime_home", return_value=runtime_home):
         kernels = list_installed_kernels(kernels_dirs=[override_dir])
@@ -360,8 +474,10 @@ def test_list_installed_kernels_reports_runtime_home_and_overrides(tmp_path: Pat
     assert [kernel.directory for kernel in kernels] == [runtime_kernel, override_kernel]
     assert kernels[0].launcher_contract_path == runtime_contract
     assert kernels[0].receipt_path == runtime_receipt
+    assert kernels[0].launcher_path == sys.executable
     assert kernels[1].launcher_contract_path == override_kernel / "launcher-contract.json"
     assert kernels[1].receipt_path == override_kernel / "install-receipt.json"
+    assert kernels[1].launcher_path == "/usr/bin/python3"
 
 
 def test_remove_kernel_deletes_named_kernel_from_runtime_home(tmp_path: Path) -> None:

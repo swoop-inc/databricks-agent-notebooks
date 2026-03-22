@@ -20,6 +20,7 @@ class LauncherKernelContract:
     env: dict[str, str]
     runtime_id: str
     launcher_path: str
+    bootstrap_argv: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

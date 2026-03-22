@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -109,7 +110,7 @@ def test_run_checks_reports_missing_java_and_kernel(tmp_path: Path) -> None:
 
 def test_check_kernel_semantics_requires_launcher_contract(tmp_path: Path) -> None:
     from databricks_agent_notebooks.runtime.doctor import check_kernel_semantics
-    from databricks_agent_notebooks.runtime.kernel import ADD_OPENS_FLAG, KERNEL_DISPLAY_NAME, KERNEL_ID
+    from databricks_agent_notebooks.runtime.kernel import CONTRACT_FILENAME, KERNEL_DISPLAY_NAME, KERNEL_ID
 
     home = _make_runtime_home(tmp_path / "runtime-home")
     kernel_dir = home.kernels_dir / KERNEL_ID
@@ -117,10 +118,18 @@ def test_check_kernel_semantics_requires_launcher_contract(tmp_path: Path) -> No
     (kernel_dir / "kernel.json").write_text(
         json.dumps(
             {
-                "argv": ["/usr/bin/java", ADD_OPENS_FLAG, "coursier", "--connection-file", "{connection_file}"],
+                "argv": [
+                    sys.executable,
+                    "-m",
+                    "databricks_agent_notebooks.runtime.launcher",
+                    "--launcher-contract",
+                    str(kernel_dir / CONTRACT_FILENAME),
+                    "--connection-file",
+                    "{connection_file}",
+                ],
                 "display_name": KERNEL_DISPLAY_NAME,
                 "language": "scala",
-                "env": {"SPARK_HOME": ""},
+                "env": {},
             }
         ),
         encoding="utf-8",
@@ -147,10 +156,18 @@ def test_check_kernel_semantics_supports_custom_kernel_id(tmp_path: Path) -> Non
     (kernel_dir / "kernel.json").write_text(
         json.dumps(
             {
-                "argv": ["/usr/bin/java", ADD_OPENS_FLAG, "coursier", "--connection-file", "{connection_file}"],
+                "argv": [
+                    sys.executable,
+                    "-m",
+                    "databricks_agent_notebooks.runtime.launcher",
+                    "--launcher-contract",
+                    str(contract_path),
+                    "--connection-file",
+                    "{connection_file}",
+                ],
                 "display_name": "Custom Scala",
                 "language": "scala",
-                "env": {"SPARK_HOME": ""},
+                "env": {},
                 "metadata": {
                     "databricks_agent_notebooks": {
                         "launcher_contract_path": str(contract_path),
@@ -168,10 +185,25 @@ def test_check_kernel_semantics_supports_custom_kernel_id(tmp_path: Path) -> Non
                 "kernel_id": kernel_id,
                 "display_name": "Custom Scala",
                 "language": "scala",
-                "argv": ["/usr/bin/java", ADD_OPENS_FLAG, "coursier", "--connection-file", "{connection_file}"],
-                "env": {"SPARK_HOME": ""},
+                "argv": [
+                    sys.executable,
+                    "-m",
+                    "databricks_agent_notebooks.runtime.launcher",
+                    "--launcher-contract",
+                    str(contract_path),
+                    "--connection-file",
+                    "{connection_file}",
+                ],
+                "env": {},
                 "runtime_id": kernel_id,
-                "launcher_path": "/usr/bin/java",
+                "launcher_path": sys.executable,
+                "bootstrap_argv": [
+                    "/usr/bin/java",
+                    ADD_OPENS_FLAG,
+                    "coursier",
+                    "--connection-file",
+                    "{connection_file}",
+                ],
             }
         ),
         encoding="utf-8",
@@ -194,6 +226,7 @@ def test_check_kernel_semantics_supports_custom_kernel_id(tmp_path: Path) -> Non
     check = check_kernel_semantics(home=home, kernel_id=kernel_id)
 
     assert check.status == "ok"
+    assert sys.executable in check.message
 
 
 def test_check_profile_default_requires_real_default_entries(tmp_path: Path) -> None:

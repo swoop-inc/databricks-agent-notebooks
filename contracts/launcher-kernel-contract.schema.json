@@ -23,6 +23,10 @@
       "additionalProperties": { "type": "string" }
     },
     "runtime_id": { "type": "string" },
-    "launcher_path": { "type": "string" }
+    "launcher_path": { "type": "string" },
+    "bootstrap_argv": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
   }
 }

@@ -20,4 +20,9 @@ The standalone CLI should grow toward:
 
 ## Current Tranche
 
-This extraction only establishes the repository lane, runtime-home layout, and shared launcher contract schema. Real kernel installation logic still needs to move from the current stubbed `install-kernel` path to a generated launcher-driven implementation.
+The standalone runtime now installs managed Scala kernels through a generated launcher boundary:
+
+- `agent-notebook kernels install` still uses Almond at install time, but rewrites the installed `kernel.json` so `argv` points at the packaged `databricks_agent_notebooks.runtime.launcher` entrypoint
+- the launcher contract artifact is authoritative for launcher path and bootstrap argv metadata
+- the launcher clears Spark-specific env at launch time instead of baking Databricks wiring into handwritten kernelspec env blocks
+- the kernel receipt records the generated install directory and its launcher contract path for repair and doctor flows

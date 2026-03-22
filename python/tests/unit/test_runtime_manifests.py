@@ -21,6 +21,7 @@ def test_launcher_kernel_contract_round_trips() -> None:
         env={"SPARK_HOME": ""},
         runtime_id="dbr-16.4-python-3.12",
         launcher_path="bin/scala-kernel-launcher",
+        bootstrap_argv=["java", "--connection-file", "{connection_file}"],
     )
 
     restored = LauncherKernelContract.from_dict(contract.to_dict())

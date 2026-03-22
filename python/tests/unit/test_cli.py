@@ -112,6 +112,7 @@ def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, c
         name="scala212-dbr-connect",
         directory=tmp_path / "runtime" / "scala212-dbr-connect",
         source="runtime-home",
+        launcher_path="/usr/bin/python3",
         launcher_contract_path=tmp_path / "runtime" / "scala212-dbr-connect" / "launcher-contract.json",
         receipt_path=tmp_path / "state" / "installations" / "kernels" / "scala212-dbr-connect.json",
     )
@@ -119,6 +120,7 @@ def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, c
         name="python3",
         directory=tmp_path / "custom" / "python3",
         source=str(tmp_path / "custom"),
+        launcher_path=None,
         launcher_contract_path=None,
         receipt_path=None,
     )
@@ -136,6 +138,7 @@ def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, c
     assert "runtime-home" in captured.out
     assert "python3" in captured.out
     assert str(tmp_path / "custom") in captured.out
+    assert "/usr/bin/python3" in captured.out
     assert str(runtime_kernel.launcher_contract_path) in captured.out
     assert "missing" in captured.out
 

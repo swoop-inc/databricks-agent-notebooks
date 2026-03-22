@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from databricks_agent_notebooks.runtime.home import ensure_runtime_home, resolve_runtime_home
+from databricks_agent_notebooks.runtime.launcher import LAUNCHER_MODULE, build_launcher_argv
 from databricks_agent_notebooks.runtime.manifest import (
     KernelArtifactReceipt,
     LauncherKernelContract,
@@ -37,6 +38,7 @@ class InstalledKernel:
     source: str
     launcher_contract_path: Path | None = None
     receipt_path: Path | None = None
+    launcher_path: str | None = None
 
 
 def _kernel_metadata(data: dict[str, object]) -> dict[str, str]:
@@ -70,6 +72,76 @@ def _kernel_metadata_paths(data: dict[str, object]) -> tuple[Path | None, Path |
 
 def _read_kernel_json(kernel_dir: Path) -> dict[str, object]:
     return json.loads((kernel_dir / "kernel.json").read_text(encoding="utf-8"))
+
+
+def _normalize_bootstrap_argv(argv: object) -> list[str]:
+    normalized = [str(part) for part in argv] if isinstance(argv, list) else []
+    if not normalized:
+        raise RuntimeError("installed kernel.json did not contain a bootstrap argv")
+    if ADD_OPENS_FLAG not in normalized:
+        normalized.insert(1, ADD_OPENS_FLAG)
+    return normalized
+
+
+def _contract_for_kernel(
+    contract_path: Path,
+    *,
+    kernel_id: str,
+    display_name: str,
+    language: str,
+    bootstrap_argv: list[str],
+) -> LauncherKernelContract:
+    launcher_argv = build_launcher_argv(contract_path)
+    return LauncherKernelContract(
+        contract_version=_CONTRACT_VERSION,
+        kernel_id=kernel_id,
+        display_name=display_name,
+        language=language,
+        argv=launcher_argv,
+        env={},
+        runtime_id=kernel_id,
+        launcher_path=launcher_argv[0],
+        bootstrap_argv=bootstrap_argv,
+    )
+
+
+def _write_kernel_json(
+    kernel_dir: Path,
+    *,
+    contract_path: Path,
+    receipt_path: Path,
+) -> dict[str, object]:
+    kernel_json_path = kernel_dir / "kernel.json"
+    data = json.loads(kernel_json_path.read_text(encoding="utf-8"))
+    data["argv"] = build_launcher_argv(contract_path)
+    data.pop("env", None)
+
+    metadata = _kernel_metadata(data)
+    metadata["launcher_contract_path"] = str(contract_path)
+    metadata["receipt_path"] = str(receipt_path)
+
+    kernel_json_path.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+    return data
+
+
+def _launcher_path_from_contract(contract_path: Path | None) -> str | None:
+    if contract_path is None or not contract_path.is_file():
+        return None
+    try:
+        return read_json_record(contract_path, LauncherKernelContract).launcher_path
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def load_launcher_contract(kernel_dir: Path) -> LauncherKernelContract | None:
+    """Load the launcher contract referenced by a generated kernelspec."""
+    contract_path, _receipt_path = _kernel_metadata_paths(_read_kernel_json(kernel_dir))
+    if contract_path is None or not contract_path.is_file():
+        return None
+    try:
+        return read_json_record(contract_path, LauncherKernelContract)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
 
 
 def _user_kernels_dir() -> Path:
@@ -162,7 +234,7 @@ def install_kernel(
     force: bool = False,
     env: Mapping[str, str] | None = None,
 ) -> Path:
-    """Install the managed Almond kernel and patch its ``kernel.json``."""
+    """Install the managed Almond kernel and rewrite its ``kernel.json``."""
     home = ensure_runtime_home(resolve_runtime_home(env))
     target_dir = resolve_kernels_dir(
         kernels_dir=kernels_dir,
@@ -206,30 +278,31 @@ def install_kernel(
     kernel_dir = target_dir / kernel_id
     contract_path = kernel_dir / CONTRACT_FILENAME
     receipt_path = _receipt_path(home.root, kernel_id)
-    patch_kernel_json(kernel_dir, contract_path=contract_path, receipt_path=receipt_path)
-    data = _read_kernel_json(kernel_dir)
+    existing_data = _read_kernel_json(kernel_dir)
+    bootstrap_argv = _normalize_bootstrap_argv(existing_data.get("argv"))
+    display_name_value = str(existing_data.get("display_name", display_name))
+    language_value = str(existing_data.get("language", "scala"))
+    data = patch_kernel_json(kernel_dir, contract_path=contract_path, receipt_path=receipt_path)
     installed_at = _installed_at_timestamp()
+    contract = _contract_for_kernel(
+        contract_path,
+        kernel_id=kernel_id,
+        display_name=display_name_value,
+        language=language_value,
+        bootstrap_argv=bootstrap_argv,
+    )
 
     write_json_record(
         contract_path,
-        LauncherKernelContract(
-            contract_version=_CONTRACT_VERSION,
-            kernel_id=kernel_id,
-            display_name=str(data.get("display_name", display_name)),
-            language=str(data.get("language", "scala")),
-            argv=[str(part) for part in data.get("argv", [])],
-            env={str(key): str(value) for key, value in dict(data.get("env", {})).items()},
-            runtime_id=kernel_id,
-            launcher_path=str(data.get("argv", [""])[0]) if data.get("argv") else "",
-        ),
+        contract,
     )
     write_json_record(
         receipt_path,
         KernelArtifactReceipt(
             receipt_version=_RECEIPT_VERSION,
             kernel_id=kernel_id,
-            display_name=str(data.get("display_name", display_name)),
-            language=str(data.get("language", "scala")),
+            display_name=str(data.get("display_name", display_name_value)),
+            language=str(data.get("language", language_value)),
             install_dir=str(kernel_dir),
             launcher_contract_path=str(contract_path),
             installed_at=installed_at,
@@ -263,6 +336,7 @@ def list_installed_kernels(
                     source=source,
                     launcher_contract_path=contract_path,
                     receipt_path=receipt_path,
+                    launcher_path=_launcher_path_from_contract(contract_path),
                 )
             )
 
@@ -301,26 +375,18 @@ def patch_kernel_json(
     kernel_dir: Path,
     contract_path: Path | None = None,
     receipt_path: Path | None = None,
-) -> None:
-    """Ensure the installed kernelspec has Databricks Connect-safe semantics."""
-    kernel_json_path = kernel_dir / "kernel.json"
-    data = json.loads(kernel_json_path.read_text(encoding="utf-8"))
-
-    argv = data.setdefault("argv", [])
-    if ADD_OPENS_FLAG not in argv:
-        argv.insert(1, ADD_OPENS_FLAG)
-
-    env = data.setdefault("env", {})
-    env["SPARK_HOME"] = ""
-
-    if contract_path is not None or receipt_path is not None:
-        metadata = _kernel_metadata(data)
-        if contract_path is not None:
-            metadata["launcher_contract_path"] = str(contract_path)
-        if receipt_path is not None:
-            metadata["receipt_path"] = str(receipt_path)
-
-    kernel_json_path.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+) -> dict[str, object]:
+    """Rewrite an installed kernelspec onto the managed launcher boundary."""
+    resolved_contract_path = contract_path or (kernel_dir / CONTRACT_FILENAME)
+    metadata_contract_path, metadata_receipt_path = _kernel_metadata_paths(_read_kernel_json(kernel_dir))
+    resolved_receipt_path = receipt_path or metadata_receipt_path
+    if resolved_receipt_path is None:
+        raise ValueError("receipt_path is required when rewriting kernel.json")
+    return _write_kernel_json(
+        kernel_dir,
+        contract_path=resolved_contract_path or metadata_contract_path or (kernel_dir / CONTRACT_FILENAME),
+        receipt_path=resolved_receipt_path,
+    )
 
 
 def verify_kernel(
@@ -344,15 +410,16 @@ def verify_kernel(
         return issues
 
     data = json.loads(kernel_json_path.read_text(encoding="utf-8"))
-    argv = data.get("argv", [])
-    if ADD_OPENS_FLAG not in argv:
-        issues.append(f"Required JVM flag missing from argv: {ADD_OPENS_FLAG}")
+    argv = [str(part) for part in data.get("argv", [])]
+    if len(argv) < 3 or argv[1:3] != ["-m", LAUNCHER_MODULE]:
+        issues.append("kernel.json argv does not point at the managed launcher boundary")
 
     kernel_env = data.get("env", {})
-    if kernel_env.get("SPARK_HOME") != "":
-        issues.append("SPARK_HOME not set to empty string in kernel env")
+    if isinstance(kernel_env, dict) and "SPARK_HOME" in kernel_env:
+        issues.append("SPARK_HOME should not be set in kernel.json env; launcher owns runtime env")
 
     contract_path, receipt_path = _kernel_metadata_paths(data)
+    contract: LauncherKernelContract | None = None
     if contract_path is None:
         issues.append("launcher contract metadata missing from kernel.json")
     elif not contract_path.is_file():
@@ -371,6 +438,12 @@ def verify_kernel(
                 issues.append("launcher contract argv does not match kernel.json")
             if contract.env != {str(key): str(value) for key, value in dict(kernel_env).items()}:
                 issues.append("launcher contract env does not match kernel.json")
+            if contract.launcher_path != argv[0]:
+                issues.append("launcher contract launcher_path does not match kernel.json argv[0]")
+            if not contract.bootstrap_argv:
+                issues.append("launcher contract bootstrap_argv missing")
+            elif ADD_OPENS_FLAG not in contract.bootstrap_argv:
+                issues.append(f"Required JVM flag missing from launcher bootstrap argv: {ADD_OPENS_FLAG}")
 
     if receipt_path is None:
         issues.append("kernel receipt metadata missing from kernel.json")

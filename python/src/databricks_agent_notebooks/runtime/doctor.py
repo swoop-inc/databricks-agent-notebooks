@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from databricks_agent_notebooks.runtime.home import RuntimeHome, resolve_runtime_home
-from databricks_agent_notebooks.runtime.kernel import KERNEL_ID, verify_kernel
+from databricks_agent_notebooks.runtime.kernel import KERNEL_ID, load_launcher_contract, verify_kernel
 
 
 @dataclass(frozen=True)
@@ -124,10 +124,12 @@ def check_kernel_semantics(
 
     issues = verify_kernel(kernel_dir.parent, kernel_id=kernel_id)
     if not issues:
+        contract = load_launcher_contract(kernel_dir)
+        launcher_identity = contract.launcher_path if contract is not None else "unknown launcher"
         return Check(
             "kernel_semantics",
             "ok",
-            "kernel semantics verified: required JVM flag present and SPARK_HOME cleared",
+            f"kernel semantics verified via launcher contract: {launcher_identity}",
         )
 
     return Check(
