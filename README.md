@@ -26,6 +26,26 @@ Verified local and offline surfaces today:
 
 Databricks compute-mode support is not yet claimed. See [`docs/databricks-support-matrix.md`](docs/databricks-support-matrix.md) for the split between verified local/offline surfaces and unverified compute-mode surfaces.
 
+## Verified Install Quickstart
+
+The repository currently verifies local/offline packaging and CLI surfaces only. A conservative local smoke path is:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e './python[dev]'
+python -m databricks_agent_notebooks help
+agent-notebook help
+agent-notebook install-kernel --help
+agent-notebook kernels install --help
+agent-notebook doctor --help
+agent-notebook kernels doctor --help
+agent-notebook runtimes doctor --help
+```
+
+This quickstart is limited to local/offline verification. It does not claim a Databricks compute-mode install or execution path yet.
+
 ## Local Development
 
 ```bash
@@ -46,4 +66,4 @@ python3 -m venv .venv
 
 See [`docs/repo-layout.md`](docs/repo-layout.md) and [`docs/runtime-home.md`](docs/runtime-home.md) for the current repository and runtime model.
 
-Additional planning docs live in [`docs/kernels.md`](docs/kernels.md), [`docs/databricks-support-matrix.md`](docs/databricks-support-matrix.md), and [`docs/release.md`](docs/release.md).
+Additional readiness docs live in [`docs/kernels.md`](docs/kernels.md), [`docs/databricks-support-matrix.md`](docs/databricks-support-matrix.md), and [`docs/release.md`](docs/release.md).

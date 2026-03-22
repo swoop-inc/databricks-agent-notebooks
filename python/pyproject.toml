@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,11 +13,14 @@ license-files = ["LICENSE"]
 authors = [
   { name = "Swoop" },
 ]
-keywords = ["databricks", "jupyter", "notebook"]
+keywords = ["databricks", "jupyter", "notebooks"]
 classifiers = [
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
   "jupytext>=1.16",
@@ -27,6 +30,11 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/swoop-inc/databricks-agent-notebooks"
+Repository = "https://github.com/swoop-inc/databricks-agent-notebooks"
+Issues = "https://github.com/swoop-inc/databricks-agent-notebooks/issues"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
@@ -34,11 +42,6 @@ dev = [
 
 [project.scripts]
 agent-notebook = "databricks_agent_notebooks.cli:main"
-
-[project.urls]
-Homepage = "https://github.com/swoop-inc/databricks-agent-notebooks"
-Repository = "https://github.com/swoop-inc/databricks-agent-notebooks"
-Issues = "https://github.com/swoop-inc/databricks-agent-notebooks/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

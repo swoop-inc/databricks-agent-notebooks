@@ -9,6 +9,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def load_pyproject() -> dict[str, object]:
+    pyproject_path = REPO_ROOT / "python" / "pyproject.toml"
+    return tomllib.loads(read_text(pyproject_path))
+
+
 def _tracked_files(*paths: str) -> list[Path]:
     result = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "ls-files", "--", *paths],
@@ -46,16 +55,14 @@ def test_launcher_contract_schema_exists() -> None:
 
 
 def test_python_distribution_declares_nbconvert_dependency() -> None:
-    pyproject_path = REPO_ROOT / "python" / "pyproject.toml"
-    pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    pyproject = load_pyproject()
 
     dependencies = pyproject["project"]["dependencies"]
     assert any(dep.startswith("nbconvert") for dep in dependencies)
 
 
-def test_python_distribution_declares_public_release_metadata() -> None:
-    pyproject_path = REPO_ROOT / "python" / "pyproject.toml"
-    pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+def test_python_distribution_declares_release_metadata() -> None:
+    pyproject = load_pyproject()
     project = pyproject["project"]
 
     assert project["description"] == (
@@ -65,12 +72,19 @@ def test_python_distribution_declares_public_release_metadata() -> None:
     assert project["license"] == "MIT"
     assert project["license-files"] == ["LICENSE"]
     assert project["authors"] == [{"name": "Swoop"}]
-    assert set(project["keywords"]) >= {"databricks", "jupyter", "notebook"}
+    assert sorted(project["keywords"]) == [
+        "databricks",
+        "jupyter",
+        "notebooks",
+    ]
 
-    classifiers = set(project["classifiers"])
+    classifiers = project["classifiers"]
+    assert "Intended Audience :: Developers" in classifiers
+    assert "Operating System :: OS Independent" in classifiers
     assert "Programming Language :: Python :: 3" in classifiers
     assert "Programming Language :: Python :: 3.11" in classifiers
     assert "Programming Language :: Python :: 3.12" in classifiers
+    assert "Topic :: Software Development :: Libraries :: Python Modules" in classifiers
 
     assert project["urls"] == {
         "Homepage": "https://github.com/swoop-inc/databricks-agent-notebooks",
@@ -83,45 +97,72 @@ def test_python_distribution_declares_public_release_metadata() -> None:
 
 
 def test_python_ci_validates_built_artifacts() -> None:
-    workflow_text = (
-        REPO_ROOT / ".github" / "workflows" / "python-ci.yml"
-    ).read_text(encoding="utf-8")
+    workflow = read_text(REPO_ROOT / ".github" / "workflows" / "python-ci.yml")
 
-    assert "python -m twine check --strict dist/*" in workflow_text
-    assert "Validate sdist and wheel contents" in workflow_text
-    assert "dist-info/licenses/LICENSE" in workflow_text
-    assert ".artifact-venv/bin/pip install dist/*.whl" in workflow_text
-    assert "scripts/installed_artifact_installer_proof.py" in workflow_text
-    assert "upload-artifact" in workflow_text
+    assert "Build distribution artifacts" in workflow
+    assert "python -m build" in workflow
+    assert "twine check --strict dist/*" in workflow
+    assert "tarfile.open" in workflow
+    assert "zipfile.ZipFile" in workflow
+    assert "licenses/LICENSE" in workflow
+    assert "entry_points.txt" in workflow
+    assert ".artifact-venv/bin/pip install dist/*.whl" in workflow
+    assert "scripts/installed_artifact_installer_proof.py" in workflow
+    assert "upload-artifact" in workflow
 
 
-def test_release_docs_only_make_verified_support_claims() -> None:
-    readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    release_text = (REPO_ROOT / "docs" / "release.md").read_text(encoding="utf-8")
-    matrix_text = (
-        REPO_ROOT / "docs" / "databricks-support-matrix.md"
-    ).read_text(encoding="utf-8")
+def test_publish_workflow_uses_trusted_publishing_scaffolding() -> None:
+    workflow = read_text(REPO_ROOT / ".github" / "workflows" / "publish.yml")
 
-    assert "compute-mode support is not yet claimed" in readme_text
-    assert "Databricks integration helpers" not in readme_text
+    assert "workflow_dispatch:" in workflow
+    assert "push:" in workflow
+    assert "tags:" in workflow
+    assert '      - "v*"' in workflow
+    assert "upload-artifact@v4" in workflow
+    assert "download-artifact@v4" in workflow
+    assert "environment: testpypi" in workflow
+    assert "environment: pypi" in workflow
+    assert "id-token: write" in workflow
+    assert "repository-url: https://test.pypi.org/legacy/" in workflow
+    assert "if: github.event_name == 'workflow_dispatch'" in workflow
+    assert "if: startsWith(github.ref, 'refs/tags/')" in workflow
+    assert "python -m build" in workflow
+    assert "dist-artifacts" in workflow
 
-    assert "Verified Today" in release_text
-    assert "sdist and wheel builds" in release_text
-    assert "twine metadata validation" in release_text
-    assert "agent-notebook kernels install" in release_text
-    assert "isolated local runtime-home" in release_text
-    assert "publishing" in release_text.lower()
-    assert "deferred" in release_text.lower()
-    assert "ci validates artifacts" in release_text.lower()
 
-    assert "Verified Local And Offline Surfaces" in matrix_text
-    assert "offline installer proof" in matrix_text
-    assert "launcher contract, kernel receipt, runtime receipt" in matrix_text
-    assert "Unverified Compute-Mode Surfaces" in matrix_text
-    assert "classic cluster" in matrix_text
-    assert "serverless" in matrix_text
-    assert "not yet claimed" in matrix_text
-    assert "planned" not in matrix_text.lower()
+def test_release_docs_only_claim_verified_local_offline_scope() -> None:
+    readme = read_text(REPO_ROOT / "README.md")
+    release = read_text(REPO_ROOT / "docs" / "release.md")
+    support_matrix = read_text(REPO_ROOT / "docs" / "databricks-support-matrix.md")
+
+    assert "local/offline" in readme
+    assert "Databricks compute-mode support is not yet claimed." in readme
+    assert "Verified Install Quickstart" in readme
+    assert "python -m pip install -e './python[dev]'" in readme
+    assert "agent-notebook help" in readme
+    assert "agent-notebook install-kernel --help" in readme
+    assert "agent-notebook kernels install --help" in readme
+    assert "agent-notebook doctor --help" in readme
+    assert "agent-notebook kernels doctor --help" in readme
+    assert "agent-notebook runtimes doctor --help" in readme
+
+    assert "Current Verified Evidence" in release
+    assert ".github/workflows/publish.yml" in release
+    assert "`testpypi`" in release
+    assert "`pypi`" in release
+    assert "Trusted Publishing" in release
+    assert "manual approval" in release
+    assert "Actual uploads still depend on GitHub environment protection rules and PyPI/TestPyPI trusted publisher configuration outside this repository." in release
+    assert "avoid support or compatibility claims that are not covered by the repository evidence" in release
+
+    assert "Verified Local And Offline Surfaces" in support_matrix
+    assert "offline artifact verification" in support_matrix
+    assert "launcher contract, kernel receipt, runtime receipt" in support_matrix
+    assert "Unverified Compute-Mode Surfaces" in support_matrix
+    assert "classic cluster" in support_matrix
+    assert "serverless" in support_matrix
+    assert "not yet claimed" in support_matrix
+    assert "planned" not in support_matrix.lower()
 
 
 def test_public_docs_exclude_private_plans_and_machine_specific_paths() -> None:
