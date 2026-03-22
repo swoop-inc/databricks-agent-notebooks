@@ -107,6 +107,31 @@ def test_run_checks_reports_missing_java_and_kernel(tmp_path: Path) -> None:
     assert "kernels install" in messages["kernel"]
 
 
+def test_check_kernel_semantics_requires_launcher_contract(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.doctor import check_kernel_semantics
+    from databricks_agent_notebooks.runtime.kernel import ADD_OPENS_FLAG, KERNEL_DISPLAY_NAME, KERNEL_ID
+
+    home = _make_runtime_home(tmp_path / "runtime-home")
+    kernel_dir = home.kernels_dir / KERNEL_ID
+    kernel_dir.mkdir(parents=True)
+    (kernel_dir / "kernel.json").write_text(
+        json.dumps(
+            {
+                "argv": ["/usr/bin/java", ADD_OPENS_FLAG, "coursier", "--connection-file", "{connection_file}"],
+                "display_name": KERNEL_DISPLAY_NAME,
+                "language": "scala",
+                "env": {"SPARK_HOME": ""},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    check = check_kernel_semantics(home=home)
+
+    assert check.status == "fail"
+    assert "launcher contract" in check.message.lower()
+
+
 def test_check_profile_default_requires_real_default_entries(tmp_path: Path) -> None:
     from databricks_agent_notebooks.runtime.doctor import check_profile
 

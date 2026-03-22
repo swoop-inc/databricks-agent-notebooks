@@ -21,7 +21,13 @@ from databricks_agent_notebooks.execution.rendering import render
 from databricks_agent_notebooks.formats.conversion import to_notebook, validate_single_language
 from databricks_agent_notebooks.integrations.databricks.clusters import ClusterError, default_service
 from databricks_agent_notebooks.runtime.doctor import Check, run_checks
-from databricks_agent_notebooks.runtime.kernel import install_kernel, list_installed_kernels, remove_kernel
+from databricks_agent_notebooks.runtime.kernel import (
+    KERNEL_DISPLAY_NAME,
+    KERNEL_ID,
+    install_kernel,
+    list_installed_kernels,
+    remove_kernel,
+)
 
 import nbformat
 
@@ -63,27 +69,49 @@ def _build_parser() -> argparse.ArgumentParser:
     kernel_subparsers = kernels.add_subparsers(dest="kernels_command", required=True)
 
     kernels_install = kernel_subparsers.add_parser("install", help="Install the Databricks Connect Almond kernel")
-    kernels_install.add_argument("--kernels-dir", default=None, help="Jupyter kernels directory")
+    kernels_install.add_argument("--id", default=KERNEL_ID, help="Stable kernel identifier")
+    kernels_install.add_argument("--display-name", default=KERNEL_DISPLAY_NAME, help="User-facing kernel display name")
+    install_location = kernels_install.add_mutually_exclusive_group()
+    install_location.add_argument("--user", action="store_true", help="Install into the user Jupyter kernels directory")
+    install_location.add_argument("--prefix", default=None, help="Install under PREFIX/share/jupyter/kernels")
+    install_location.add_argument("--sys-prefix", action="store_true", help="Install under sys.prefix/share/jupyter/kernels")
+    install_location.add_argument("--jupyter-path", default=None, help="Install into an explicit Jupyter kernels directory")
+    install_location.add_argument("--kernels-dir", default=None, help=argparse.SUPPRESS)
+    kernels_install.add_argument("--force", action="store_true", help="Overwrite an existing kernelspec if present")
 
     kernels_list = kernel_subparsers.add_parser("list", help="List installed kernels under runtime-home and overrides")
+    kernels_list.add_argument(
+        "--jupyter-path",
+        action="append",
+        default=[],
+        help="Additional kernels directory to inspect (can be passed multiple times)",
+    )
     kernels_list.add_argument(
         "--kernels-dir",
         action="append",
         default=[],
-        help="Additional kernels directory to inspect (can be passed multiple times)",
+        help=argparse.SUPPRESS,
     )
 
     kernels_remove = kernel_subparsers.add_parser("remove", help="Remove a named installed kernel")
     kernels_remove.add_argument("name", help="Kernel directory name to remove")
     kernels_remove.add_argument(
-        "--kernels-dir",
+        "--jupyter-path",
         action="append",
         default=[],
         help="Additional kernels directory to search (can be passed multiple times)",
     )
+    kernels_remove.add_argument(
+        "--kernels-dir",
+        action="append",
+        default=[],
+        help=argparse.SUPPRESS,
+    )
 
     kernels_doctor = kernel_subparsers.add_parser("doctor", help="Validate kernel installation and environment")
     kernels_doctor.add_argument("--profile", default=None, help="Databricks CLI profile to validate")
+    kernels_doctor.add_argument("--jupyter-path", default=None, help="Validate an explicit Jupyter kernels directory")
+    kernels_doctor.add_argument("--kernels-dir", default=None, help=argparse.SUPPRESS)
 
     # -- render --
     rnd = subparsers.add_parser("render", help="Render an already-executed notebook")
@@ -242,27 +270,61 @@ def _cmd_clusters(args: argparse.Namespace) -> int:
 
 
 def _cmd_install_kernel(args: argparse.Namespace) -> int:
-    return _cmd_kernels_install(args)
+    shim_args = argparse.Namespace(
+        id=KERNEL_ID,
+        display_name=KERNEL_DISPLAY_NAME,
+        kernels_dir=args.kernels_dir,
+        user=False,
+        prefix=None,
+        sys_prefix=False,
+        jupyter_path=None,
+        force=True,
+    )
+    return _cmd_kernels_install(shim_args)
 
 
 def _resolve_kernel_dir_args(args: argparse.Namespace) -> list[Path]:
-    raw_dirs = getattr(args, "kernels_dir", None)
-    if raw_dirs is None:
-        return []
-    if isinstance(raw_dirs, list):
-        return [Path(kernels_dir) for kernels_dir in raw_dirs]
-    return [Path(raw_dirs)]
+    raw_dirs = []
+    for attribute in ("kernels_dir", "jupyter_path"):
+        value = getattr(args, attribute, None)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            raw_dirs.extend(value)
+        else:
+            raw_dirs.append(value)
+
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for raw_dir in raw_dirs:
+        path = Path(raw_dir)
+        if path in seen:
+            continue
+        resolved.append(path)
+        seen.add(path)
+    return resolved
+
+
+def _resolve_single_kernel_dir(value: str | None) -> Path | None:
+    return Path(value) if value is not None else None
 
 
 def _cmd_kernels_install(args: argparse.Namespace) -> int:
     """Install the Databricks Connect Almond kernel."""
-    kernel_dirs = _resolve_kernel_dir_args(args)
-    kernels_dir = kernel_dirs[0] if kernel_dirs else None
     try:
-        kernel_dir = install_kernel(kernels_dir=kernels_dir)
+        kernel_dir = install_kernel(
+            kernel_id=getattr(args, "id", KERNEL_ID),
+            display_name=getattr(args, "display_name", KERNEL_DISPLAY_NAME),
+            kernels_dir=_resolve_single_kernel_dir(getattr(args, "kernels_dir", None)),
+            user=getattr(args, "user", False),
+            prefix=_resolve_single_kernel_dir(getattr(args, "prefix", None)),
+            sys_prefix=getattr(args, "sys_prefix", False),
+            jupyter_path=_resolve_single_kernel_dir(getattr(args, "jupyter_path", None)),
+            force=getattr(args, "force", False),
+        )
         print(f"Kernel installed: {kernel_dir}")
         return 0
-    except (RuntimeError, subprocess.CalledProcessError) as exc:
+    except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -274,9 +336,11 @@ def _cmd_kernels_list(args: argparse.Namespace) -> int:
         print("No kernels installed.")
         return 0
 
-    print(f"{'NAME':<24} {'SOURCE':<20} DIRECTORY")
+    print(f"{'NAME':<24} {'SOURCE':<20} {'CONTRACT':<18} {'RECEIPT':<18} DIRECTORY")
     for kernel in kernels:
-        print(f"{kernel.name:<24} {kernel.source:<20} {kernel.directory}")
+        contract = str(kernel.launcher_contract_path) if kernel.launcher_contract_path is not None else "missing"
+        receipt = str(kernel.receipt_path) if kernel.receipt_path is not None else "missing"
+        print(f"{kernel.name:<24} {kernel.source:<20} {contract:<18} {receipt:<18} {kernel.directory}")
     return 0
 
 
@@ -319,7 +383,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 def _cmd_kernels_doctor(args: argparse.Namespace) -> int:
     """Run environment validation checks."""
-    checks = run_checks(profile=args.profile)
+    kernel_dirs = _resolve_kernel_dir_args(args)
+    if kernel_dirs:
+        checks = run_checks(profile=args.profile, kernels_dir=kernel_dirs[0])
+    else:
+        checks = run_checks(profile=args.profile)
 
     status_symbols = {"ok": "[ok]", "warn": "[!!]", "fail": "[FAIL]"}
 

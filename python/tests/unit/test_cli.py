@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from databricks_agent_notebooks.cli import main
 from databricks_agent_notebooks.config.frontmatter import DatabricksConfig
 from databricks_agent_notebooks.integrations.databricks.clusters import Cluster
+from databricks_agent_notebooks.runtime.kernel import KERNEL_DISPLAY_NAME, KERNEL_ID
 from databricks_agent_notebooks.runtime.doctor import Check
 
 
@@ -61,7 +62,16 @@ def test_install_kernel_command_delegates(tmp_path: Path, capsys) -> None:
         result = main(["install-kernel", "--kernels-dir", str(tmp_path / "kernels")])
 
     assert result == 0
-    install_kernel.assert_called_once_with(kernels_dir=tmp_path / "kernels")
+    install_kernel.assert_called_once_with(
+        kernel_id=KERNEL_ID,
+        display_name=KERNEL_DISPLAY_NAME,
+        kernels_dir=tmp_path / "kernels",
+        user=False,
+        prefix=None,
+        sys_prefix=False,
+        jupyter_path=None,
+        force=True,
+    )
     assert "Kernel installed" in capsys.readouterr().out
 
 
@@ -69,10 +79,31 @@ def test_kernels_install_command_delegates(tmp_path: Path, capsys) -> None:
     kernel_dir = tmp_path / "kernels" / "scala212-dbr-connect"
 
     with patch("databricks_agent_notebooks.cli.install_kernel", return_value=kernel_dir) as install_kernel:
-        result = main(["kernels", "install", "--kernels-dir", str(tmp_path / "kernels")])
+        result = main(
+            [
+                "kernels",
+                "install",
+                "--id",
+                "custom-scala",
+                "--display-name",
+                "Custom Scala",
+                "--jupyter-path",
+                str(tmp_path / "kernels"),
+                "--force",
+            ]
+        )
 
     assert result == 0
-    install_kernel.assert_called_once_with(kernels_dir=tmp_path / "kernels")
+    install_kernel.assert_called_once_with(
+        kernel_id="custom-scala",
+        display_name="Custom Scala",
+        kernels_dir=None,
+        user=False,
+        prefix=None,
+        sys_prefix=False,
+        jupyter_path=tmp_path / "kernels",
+        force=True,
+    )
     assert "Kernel installed" in capsys.readouterr().out
 
 
@@ -81,11 +112,15 @@ def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, c
         name="scala212-dbr-connect",
         directory=tmp_path / "runtime" / "scala212-dbr-connect",
         source="runtime-home",
+        launcher_contract_path=tmp_path / "runtime" / "scala212-dbr-connect" / "launcher-contract.json",
+        receipt_path=tmp_path / "state" / "installations" / "kernels" / "scala212-dbr-connect.json",
     )
     override_kernel = SimpleNamespace(
         name="python3",
         directory=tmp_path / "custom" / "python3",
         source=str(tmp_path / "custom"),
+        launcher_contract_path=None,
+        receipt_path=None,
     )
 
     with patch(
@@ -101,6 +136,8 @@ def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, c
     assert "runtime-home" in captured.out
     assert "python3" in captured.out
     assert str(tmp_path / "custom") in captured.out
+    assert str(runtime_kernel.launcher_contract_path) in captured.out
+    assert "missing" in captured.out
 
 
 def test_kernels_remove_command_delegates(tmp_path: Path, capsys) -> None:
@@ -136,7 +173,7 @@ def test_doctor_command_prints_failures(capsys) -> None:
 def test_kernels_doctor_command_prints_failures(capsys) -> None:
     checks = [
         Check("coursier", "ok", "coursier found"),
-        Check("kernel", "fail", "kernel missing"),
+        Check("kernel_semantics", "fail", "launcher contract missing"),
     ]
 
     with patch("databricks_agent_notebooks.cli.run_checks", return_value=checks) as run_checks:
@@ -145,5 +182,6 @@ def test_kernels_doctor_command_prints_failures(capsys) -> None:
     assert result == 1
     run_checks.assert_called_once_with(profile="DEFAULT")
     captured = capsys.readouterr()
-    assert "[FAIL] kernel" in captured.out
+    assert "[FAIL] kernel_semantics" in captured.out
+    assert "launcher contract missing" in captured.out
     assert "1 check(s) failed." in captured.err
