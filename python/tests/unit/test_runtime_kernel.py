@@ -121,3 +121,51 @@ def test_verify_kernel_reports_missing_launcher_semantics(tmp_path: Path) -> Non
 
     assert any("add-opens" in issue.lower() for issue in issues)
     assert any("SPARK_HOME" in issue for issue in issues)
+
+
+def test_list_installed_kernels_reports_runtime_home_and_overrides(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.kernel import list_installed_kernels
+
+    runtime_home = _make_runtime_home(tmp_path / "runtime-home")
+    runtime_kernel = runtime_home.kernels_dir / "scala212-dbr-connect"
+    runtime_kernel.mkdir(parents=True)
+    (runtime_kernel / "kernel.json").write_text("{}", encoding="utf-8")
+
+    override_dir = tmp_path / "custom-kernels"
+    override_kernel = override_dir / "python3"
+    override_kernel.mkdir(parents=True)
+    (override_kernel / "kernel.json").write_text("{}", encoding="utf-8")
+
+    with patch("databricks_agent_notebooks.runtime.kernel.resolve_runtime_home", return_value=runtime_home):
+        kernels = list_installed_kernels(kernels_dirs=[override_dir])
+
+    assert [(kernel.name, kernel.source) for kernel in kernels] == [
+        ("scala212-dbr-connect", "runtime-home"),
+        ("python3", str(override_dir)),
+    ]
+    assert [kernel.directory for kernel in kernels] == [runtime_kernel, override_kernel]
+
+
+def test_remove_kernel_deletes_named_kernel_from_runtime_home(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.kernel import remove_kernel
+
+    runtime_home = _make_runtime_home(tmp_path / "runtime-home")
+    kernel_dir = runtime_home.kernels_dir / "scala212-dbr-connect"
+    kernel_dir.mkdir(parents=True)
+    (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
+
+    with patch("databricks_agent_notebooks.runtime.kernel.resolve_runtime_home", return_value=runtime_home):
+        removed = remove_kernel("scala212-dbr-connect")
+
+    assert removed == kernel_dir
+    assert not kernel_dir.exists()
+
+
+def test_remove_kernel_rejects_path_like_names(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.kernel import remove_kernel
+
+    runtime_home = _make_runtime_home(tmp_path / "runtime-home")
+
+    with patch("databricks_agent_notebooks.runtime.kernel.resolve_runtime_home", return_value=runtime_home):
+        with pytest.raises(ValueError, match="kernel name"):
+            remove_kernel("../scala212-dbr-connect")

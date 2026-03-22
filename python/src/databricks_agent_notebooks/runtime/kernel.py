@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from databricks_agent_notebooks.runtime.home import ensure_runtime_home, resolve_runtime_home
@@ -13,6 +14,15 @@ from databricks_agent_notebooks.runtime.home import ensure_runtime_home, resolve
 KERNEL_ID = "scala212-dbr-connect"
 KERNEL_DISPLAY_NAME = "Scala 2.12 (Databricks Connect)"
 ADD_OPENS_FLAG = "--add-opens=java.base/java.nio=ALL-UNNAMED"
+
+
+@dataclass(frozen=True)
+class InstalledKernel:
+    """A kernelspec discovered in the managed runtime home or an override dir."""
+
+    name: str
+    directory: Path
+    source: str
 
 
 def find_coursier() -> str | None:
@@ -33,6 +43,26 @@ def resolve_kernels_dir(
 
     home = ensure_runtime_home(resolve_runtime_home(env))
     return home.kernels_dir
+
+
+def _list_search_dirs(
+    kernels_dirs: list[Path] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> list[tuple[Path, str]]:
+    runtime_kernels_dir = resolve_runtime_home(env).kernels_dir
+    search_dirs: list[tuple[Path, str]] = [(runtime_kernels_dir, "runtime-home")]
+
+    for kernels_dir in kernels_dirs or []:
+        search_dirs.append((kernels_dir, str(kernels_dir)))
+
+    deduped: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    for path, source in search_dirs:
+        if path in seen:
+            continue
+        deduped.append((path, source))
+        seen.add(path)
+    return deduped
 
 
 def install_kernel(
@@ -72,6 +102,55 @@ def install_kernel(
     kernel_dir = target_dir / KERNEL_ID
     patch_kernel_json(kernel_dir)
     return kernel_dir
+
+
+def list_installed_kernels(
+    kernels_dirs: list[Path] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> list[InstalledKernel]:
+    """Return installed kernels from the managed runtime home and override dirs."""
+    kernels: list[InstalledKernel] = []
+
+    for kernels_dir, source in _list_search_dirs(kernels_dirs=kernels_dirs, env=env):
+        if not kernels_dir.is_dir():
+            continue
+
+        for child in sorted(kernels_dir.iterdir(), key=lambda path: path.name):
+            if not child.is_dir():
+                continue
+            if not (child / "kernel.json").is_file():
+                continue
+            kernels.append(InstalledKernel(name=child.name, directory=child, source=source))
+
+    return kernels
+
+
+def remove_kernel(
+    name: str,
+    kernels_dirs: list[Path] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    """Remove a named installed kernel from runtime-home or an override dir."""
+    if not name or name in {".", ".."} or Path(name).name != name or any(sep in name for sep in ("/", "\\")):
+        raise ValueError("kernel name must be a simple directory name")
+
+    matches: list[Path] = []
+    for kernels_dir, _source in _list_search_dirs(kernels_dirs=kernels_dirs, env=env):
+        candidate = kernels_dir / name
+        if not candidate.is_dir():
+            continue
+        if not (candidate / "kernel.json").is_file():
+            continue
+        matches.append(candidate)
+
+    if not matches:
+        raise FileNotFoundError(f"kernel not found: {name}")
+    if len(matches) > 1:
+        joined = ", ".join(str(match) for match in matches)
+        raise RuntimeError(f"kernel '{name}' found in multiple directories: {joined}")
+
+    shutil.rmtree(matches[0])
+    return matches[0]
 
 
 def patch_kernel_json(kernel_dir: Path) -> None:

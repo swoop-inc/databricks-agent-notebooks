@@ -104,7 +104,7 @@ def test_run_checks_reports_missing_java_and_kernel(tmp_path: Path) -> None:
     assert statuses["kernel_semantics"] == "fail"
     assert statuses["databricks_cli"] == "fail"
     assert statuses["java"] == "fail"
-    assert "install-kernel" in messages["kernel"]
+    assert "kernels install" in messages["kernel"]
 
 
 def test_check_profile_default_requires_real_default_entries(tmp_path: Path) -> None:

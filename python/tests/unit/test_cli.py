@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from databricks_agent_notebooks.cli import main
@@ -64,6 +65,58 @@ def test_install_kernel_command_delegates(tmp_path: Path, capsys) -> None:
     assert "Kernel installed" in capsys.readouterr().out
 
 
+def test_kernels_install_command_delegates(tmp_path: Path, capsys) -> None:
+    kernel_dir = tmp_path / "kernels" / "scala212-dbr-connect"
+
+    with patch("databricks_agent_notebooks.cli.install_kernel", return_value=kernel_dir) as install_kernel:
+        result = main(["kernels", "install", "--kernels-dir", str(tmp_path / "kernels")])
+
+    assert result == 0
+    install_kernel.assert_called_once_with(kernels_dir=tmp_path / "kernels")
+    assert "Kernel installed" in capsys.readouterr().out
+
+
+def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, capsys) -> None:
+    runtime_kernel = SimpleNamespace(
+        name="scala212-dbr-connect",
+        directory=tmp_path / "runtime" / "scala212-dbr-connect",
+        source="runtime-home",
+    )
+    override_kernel = SimpleNamespace(
+        name="python3",
+        directory=tmp_path / "custom" / "python3",
+        source=str(tmp_path / "custom"),
+    )
+
+    with patch(
+        "databricks_agent_notebooks.cli.list_installed_kernels",
+        return_value=[runtime_kernel, override_kernel],
+    ) as list_installed_kernels:
+        result = main(["kernels", "list", "--kernels-dir", str(tmp_path / "custom")])
+
+    assert result == 0
+    list_installed_kernels.assert_called_once_with(kernels_dirs=[tmp_path / "custom"])
+    captured = capsys.readouterr()
+    assert "scala212-dbr-connect" in captured.out
+    assert "runtime-home" in captured.out
+    assert "python3" in captured.out
+    assert str(tmp_path / "custom") in captured.out
+
+
+def test_kernels_remove_command_delegates(tmp_path: Path, capsys) -> None:
+    removed_dir = tmp_path / "runtime" / "scala212-dbr-connect"
+
+    with patch(
+        "databricks_agent_notebooks.cli.remove_kernel",
+        return_value=removed_dir,
+    ) as remove_kernel:
+        result = main(["kernels", "remove", "scala212-dbr-connect", "--kernels-dir", str(tmp_path / "custom")])
+
+    assert result == 0
+    remove_kernel.assert_called_once_with("scala212-dbr-connect", kernels_dirs=[tmp_path / "custom"])
+    assert str(removed_dir) in capsys.readouterr().out
+
+
 def test_doctor_command_prints_failures(capsys) -> None:
     checks = [
         Check("coursier", "ok", "coursier found"),
@@ -72,6 +125,22 @@ def test_doctor_command_prints_failures(capsys) -> None:
 
     with patch("databricks_agent_notebooks.cli.run_checks", return_value=checks) as run_checks:
         result = main(["doctor", "--profile", "DEFAULT"])
+
+    assert result == 1
+    run_checks.assert_called_once_with(profile="DEFAULT")
+    captured = capsys.readouterr()
+    assert "[FAIL] kernel" in captured.out
+    assert "1 check(s) failed." in captured.err
+
+
+def test_kernels_doctor_command_prints_failures(capsys) -> None:
+    checks = [
+        Check("coursier", "ok", "coursier found"),
+        Check("kernel", "fail", "kernel missing"),
+    ]
+
+    with patch("databricks_agent_notebooks.cli.run_checks", return_value=checks) as run_checks:
+        result = main(["kernels", "doctor", "--profile", "DEFAULT"])
 
     assert result == 1
     run_checks.assert_called_once_with(profile="DEFAULT")

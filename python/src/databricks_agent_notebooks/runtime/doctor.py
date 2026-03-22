@@ -14,6 +14,8 @@ from pathlib import Path
 from databricks_agent_notebooks.runtime.home import RuntimeHome, resolve_runtime_home
 from databricks_agent_notebooks.runtime.kernel import KERNEL_ID, verify_kernel
 
+_INSTALL_COMMAND = "agent-notebook kernels install"
+
 
 @dataclass(frozen=True)
 class Check:
@@ -91,10 +93,10 @@ def check_kernel(
         return Check(
             "kernel",
             "warn",
-            f"found '{fallback_name}' but not '{KERNEL_ID}' — run 'agent-notebook install-kernel'",
+            f"found '{fallback_name}' but not '{KERNEL_ID}' — run '{_INSTALL_COMMAND}'",
         )
 
-    return Check("kernel", "fail", f"managed kernel '{KERNEL_ID}' not found — run 'agent-notebook install-kernel'")
+    return Check("kernel", "fail", f"managed kernel '{KERNEL_ID}' not found — run '{_INSTALL_COMMAND}'")
 
 
 def check_kernel_semantics(
@@ -107,7 +109,7 @@ def check_kernel_semantics(
         return Check(
             "kernel_semantics",
             "fail",
-            f"managed kernel '{KERNEL_ID}' not found — run 'agent-notebook install-kernel'",
+            f"managed kernel '{KERNEL_ID}' not found — run '{_INSTALL_COMMAND}'",
         )
 
     issues = verify_kernel(kernel_dir.parent)
