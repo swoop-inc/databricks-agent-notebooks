@@ -250,6 +250,92 @@ def test_check_kernel_semantics_supports_custom_kernel_id(tmp_path: Path) -> Non
     assert sys.executable in check.message
 
 
+def test_check_kernel_semantics_accepts_legacy_artifacts(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.doctor import check_kernel_semantics
+
+    home = _make_runtime_home(tmp_path / "runtime-home")
+    kernel_id = "custom-scala"
+    kernel_dir = home.kernels_dir / kernel_id
+    kernel_dir.mkdir(parents=True)
+    contract_path = kernel_dir / "launcher-contract.json"
+    receipt_path = home.installations_dir / "kernels" / f"{kernel_id}.json"
+    receipt_path.parent.mkdir(parents=True)
+    (kernel_dir / "kernel.json").write_text(
+        json.dumps(
+            {
+                "argv": [
+                    sys.executable,
+                    "-m",
+                    "databricks_agent_notebooks.runtime.launcher",
+                    "--launcher-contract",
+                    str(contract_path),
+                    "--connection-file",
+                    "{connection_file}",
+                ],
+                "display_name": "Custom Scala",
+                "language": "scala",
+                "env": {},
+                "metadata": {
+                    "databricks_agent_notebooks": {
+                        "launcher_contract_path": str(contract_path),
+                        "receipt_path": str(receipt_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    contract_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "1",
+                "kernel_id": kernel_id,
+                "display_name": "Custom Scala",
+                "language": "scala",
+                "argv": [
+                    sys.executable,
+                    "-m",
+                    "databricks_agent_notebooks.runtime.launcher",
+                    "--launcher-contract",
+                    str(contract_path),
+                    "--connection-file",
+                    "{connection_file}",
+                ],
+                "env": {},
+                "runtime_id": kernel_id,
+                "launcher_path": sys.executable,
+                "bootstrap_argv": [
+                    "/usr/bin/java",
+                    "--add-opens=java.base/java.nio=ALL-UNNAMED",
+                    "coursier",
+                    "--connection-file",
+                    "{connection_file}",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "receipt_version": "1",
+                "kernel_id": kernel_id,
+                "display_name": "Custom Scala",
+                "language": "scala",
+                "install_dir": str(kernel_dir),
+                "launcher_contract_path": str(contract_path),
+                "installed_at": "2026-03-22T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    check = check_kernel_semantics(home=home, kernel_id=kernel_id)
+
+    assert check.status == "ok"
+    assert sys.executable in check.message
+
+
 def test_check_profile_default_requires_real_default_entries(tmp_path: Path) -> None:
     from databricks_agent_notebooks.runtime.doctor import check_profile
 
