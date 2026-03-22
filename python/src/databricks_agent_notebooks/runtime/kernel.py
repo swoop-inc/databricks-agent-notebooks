@@ -177,8 +177,9 @@ def _runtime_identity_from_artifacts(
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             pass
         else:
-            runtime_id = contract.runtime_id
-            runtime_receipt_path = Path(contract.runtime_receipt_path)
+            runtime_id = contract.runtime_id or None
+            if contract.runtime_receipt_path:
+                runtime_receipt_path = Path(contract.runtime_receipt_path)
 
     if receipt_path is not None and receipt_path.is_file():
         try:
@@ -186,8 +187,8 @@ def _runtime_identity_from_artifacts(
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             pass
         else:
-            runtime_id = runtime_id or receipt.runtime_id
-            if runtime_receipt_path is None:
+            runtime_id = runtime_id or receipt.runtime_id or None
+            if runtime_receipt_path is None and receipt.runtime_receipt_path:
                 runtime_receipt_path = Path(receipt.runtime_receipt_path)
 
     return runtime_id, runtime_receipt_path
@@ -517,16 +518,15 @@ def verify_kernel(
                 issues.append("launcher contract env does not match kernel.json")
             if contract.launcher_path != argv[0]:
                 issues.append("launcher contract launcher_path does not match kernel.json argv[0]")
-            runtime_receipt_path = Path(contract.runtime_receipt_path)
+            if contract.runtime_receipt_path:
+                runtime_receipt_path = Path(contract.runtime_receipt_path)
             if not contract.bootstrap_argv:
                 issues.append("launcher contract bootstrap_argv missing")
             elif ADD_OPENS_FLAG not in contract.bootstrap_argv:
                 issues.append(f"Required JVM flag missing from launcher bootstrap argv: {ADD_OPENS_FLAG}")
             if not contract.runtime_id:
                 issues.append("launcher contract runtime_id missing")
-            if not contract.runtime_receipt_path:
-                issues.append("launcher contract runtime_receipt_path missing")
-            elif not runtime_receipt_path.is_file():
+            if runtime_receipt_path is not None and not runtime_receipt_path.is_file():
                 issues.append(f"runtime receipt not found: {runtime_receipt_path}")
 
     if receipt_path is None:
@@ -545,9 +545,9 @@ def verify_kernel(
                 )
             if not _paths_refer_to_same_location(kernel_dir, receipt.install_dir):
                 issues.append("kernel receipt install_dir does not match kernel directory")
-            if contract is not None and receipt.runtime_id != contract.runtime_id:
+            if contract is not None and receipt.runtime_id and receipt.runtime_id != contract.runtime_id:
                 issues.append("kernel receipt runtime_id does not match launcher contract")
-            if runtime_receipt_path is not None and not _paths_refer_to_same_location(
+            if runtime_receipt_path is not None and receipt.runtime_receipt_path and not _paths_refer_to_same_location(
                 runtime_receipt_path,
                 receipt.runtime_receipt_path,
             ):

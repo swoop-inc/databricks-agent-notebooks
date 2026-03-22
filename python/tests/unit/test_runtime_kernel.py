@@ -771,6 +771,108 @@ def test_list_installed_kernels_reports_runtime_home_and_overrides(tmp_path: Pat
     assert kernels[1].runtime_id == "local-python3"
 
 
+def test_legacy_kernel_artifacts_are_accepted_by_runtime_flows(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.kernel import (
+        ADD_OPENS_FLAG,
+        load_launcher_contract,
+        list_installed_kernels,
+        verify_kernel,
+    )
+
+    runtime_home = _make_runtime_home(tmp_path / "runtime-home")
+    kernel_id = "scala212-dbr-connect"
+    runtime_id = "dbr-16.4-python-3.12"
+    kernel_dir = runtime_home.kernels_dir / kernel_id
+    contract_path = kernel_dir / "launcher-contract.json"
+    receipt_path = runtime_home.installations_dir / "kernels" / f"{kernel_id}.json"
+    kernel_dir.mkdir(parents=True)
+    receipt_path.parent.mkdir(parents=True)
+    (kernel_dir / "kernel.json").write_text(
+        json.dumps(
+            {
+                "argv": [
+                    sys.executable,
+                    "-m",
+                    "databricks_agent_notebooks.runtime.launcher",
+                    "--launcher-contract",
+                    str(contract_path),
+                    "--connection-file",
+                    "{connection_file}",
+                ],
+                "display_name": "Scala 2.12 (Databricks Connect)",
+                "language": "scala",
+                "env": {},
+                "metadata": {
+                    "databricks_agent_notebooks": {
+                        "launcher_contract_path": str(contract_path),
+                        "receipt_path": str(receipt_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    contract_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "1",
+                "kernel_id": kernel_id,
+                "display_name": "Scala 2.12 (Databricks Connect)",
+                "language": "scala",
+                "argv": [
+                    sys.executable,
+                    "-m",
+                    "databricks_agent_notebooks.runtime.launcher",
+                    "--launcher-contract",
+                    str(contract_path),
+                    "--connection-file",
+                    "{connection_file}",
+                ],
+                "env": {},
+                "runtime_id": runtime_id,
+                "launcher_path": sys.executable,
+                "bootstrap_argv": [
+                    "/usr/bin/java",
+                    ADD_OPENS_FLAG,
+                    "coursier",
+                    "--connection-file",
+                    "{connection_file}",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "receipt_version": "1",
+                "kernel_id": kernel_id,
+                "display_name": "Scala 2.12 (Databricks Connect)",
+                "language": "scala",
+                "install_dir": str(kernel_dir),
+                "launcher_contract_path": str(contract_path),
+                "installed_at": "2026-03-22T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    contract = load_launcher_contract(kernel_dir)
+    with patch("databricks_agent_notebooks.runtime.kernel.resolve_runtime_home", return_value=runtime_home):
+        kernels = list_installed_kernels()
+        issues = verify_kernel()
+
+    assert contract is not None
+    assert contract.runtime_id == runtime_id
+    assert contract.runtime_receipt_path == ""
+    assert issues == []
+    assert len(kernels) == 1
+    assert kernels[0].name == kernel_id
+    assert kernels[0].launcher_path == sys.executable
+    assert kernels[0].runtime_id == runtime_id
+    assert kernels[0].runtime_receipt_path is None
+
+
 def test_remove_kernel_deletes_named_kernel_from_runtime_home(tmp_path: Path) -> None:
     from databricks_agent_notebooks.runtime.kernel import remove_kernel
 

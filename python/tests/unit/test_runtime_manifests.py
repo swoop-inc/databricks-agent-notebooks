@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from databricks_agent_notebooks.runtime.manifest import (
@@ -87,3 +88,77 @@ def test_json_record_writer_creates_parent_directories(tmp_path: Path) -> None:
 
     assert path.is_file()
     assert path.parent.is_dir()
+
+
+def test_read_json_record_normalizes_legacy_launcher_kernel_contract(tmp_path: Path) -> None:
+    contract_path = tmp_path / "launcher-contract.json"
+    contract_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "1",
+                "kernel_id": "scala212-dbr-connect",
+                "display_name": "Scala 2.12 (Databricks Connect)",
+                "language": "scala",
+                "argv": ["python", "-m", "databricks_agent_notebooks"],
+                "env": {},
+                "runtime_id": "dbr-16.4-python-3.12",
+                "launcher_path": "python",
+                "bootstrap_argv": ["java", "--connection-file", "{connection_file}"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = read_json_record(contract_path, LauncherKernelContract)
+
+    assert restored.runtime_id == "dbr-16.4-python-3.12"
+    assert restored.runtime_receipt_path == ""
+
+
+def test_read_json_record_normalizes_legacy_kernel_artifact_receipt(tmp_path: Path) -> None:
+    receipt_path = tmp_path / "kernel.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "receipt_version": "1",
+                "kernel_id": "scala212-dbr-connect",
+                "display_name": "Scala 2.12 (Databricks Connect)",
+                "language": "scala",
+                "install_dir": "data/kernels/specs/scala212-dbr-connect",
+                "launcher_contract_path": "contracts/scala212-dbr-connect.json",
+                "installed_at": "2026-03-22T12:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = read_json_record(receipt_path, KernelArtifactReceipt)
+
+    assert restored.kernel_id == "scala212-dbr-connect"
+    assert restored.runtime_id == ""
+    assert restored.runtime_receipt_path == ""
+
+
+def test_read_json_record_normalizes_legacy_runtime_install_receipt(tmp_path: Path) -> None:
+    receipt_path = tmp_path / "runtime-receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "receipt_version": "1",
+                "runtime_id": "dbr-16.4-python-3.12",
+                "runtime_kind": "databricks-connect",
+                "databricks_line": "16.4",
+                "python_line": "3.12",
+                "install_root": "data/runtimes/dbr-16.4-python-3.12",
+                "launcher_contract_path": "kernels/scala212-dbr-connect/launcher-contract.json",
+                "installed_at": "2026-03-22T12:00:00+00:00",
+                "status": "materialized",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = read_json_record(receipt_path, RuntimeInstallReceipt)
+
+    assert restored.runtime_id == "dbr-16.4-python-3.12"
+    assert restored.install_root == "data/runtimes/dbr-16.4-python-3.12"

@@ -3,11 +3,24 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+
+def _normalized_dataclass_payload(
+    record_type: type[Any],
+    data: dict[str, Any],
+    *,
+    defaults: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    field_names = {field.name for field in fields(record_type)}
+    normalized = {key: value for key, value in data.items() if key in field_names}
+    for key, value in (defaults or {}).items():
+        normalized.setdefault(key, value)
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -27,8 +40,20 @@ class LauncherKernelContract:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "LauncherKernelContract":
-        return cls(**data)
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        source_path: Path | None = None,
+    ) -> "LauncherKernelContract":
+        del source_path
+        return cls(
+            **_normalized_dataclass_payload(
+                cls,
+                data,
+                defaults={"runtime_receipt_path": ""},
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -46,8 +71,16 @@ class RuntimeInstallReceipt:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RuntimeInstallReceipt":
-        return cls(**data)
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        source_path: Path | None = None,
+    ) -> "RuntimeInstallReceipt":
+        defaults: dict[str, Any] = {}
+        if source_path is not None:
+            defaults["install_root"] = str(source_path.parent)
+        return cls(**_normalized_dataclass_payload(cls, data, defaults=defaults))
 
 
 @dataclass(frozen=True)
@@ -66,8 +99,23 @@ class KernelArtifactReceipt:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "KernelArtifactReceipt":
-        return cls(**data)
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        source_path: Path | None = None,
+    ) -> "KernelArtifactReceipt":
+        del source_path
+        return cls(
+            **_normalized_dataclass_payload(
+                cls,
+                data,
+                defaults={
+                    "runtime_id": "",
+                    "runtime_receipt_path": "",
+                },
+            )
+        )
 
 
 def write_json_record(path: Path, record: Any) -> Path:
@@ -82,4 +130,4 @@ def read_json_record(path: Path, record_type: type[T]) -> T:
     """Load a JSON record from disk into the target record type."""
     data = json.loads(path.read_text(encoding="utf-8"))
     from_dict = getattr(record_type, "from_dict")
-    return from_dict(data)
+    return from_dict(data, source_path=path)

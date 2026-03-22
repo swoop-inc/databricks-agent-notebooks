@@ -76,3 +76,34 @@ def test_doctor_installed_runtimes_reports_install_root_mismatch(tmp_path: Path)
     assert checks[0].status == "fail"
     assert receipt.runtime_id in checks[0].name
     assert "install_root mismatch" in checks[0].message
+
+
+def test_runtime_inventory_accepts_legacy_runtime_receipt_shape(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.inventory import doctor_installed_runtimes, list_installed_runtimes
+
+    home = _make_runtime_home(tmp_path / "runtime-home")
+    runtime_id = "dbr-16.4-python-3.12"
+    receipt_path = home.runtimes_dir / runtime_id / "runtime-receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "receipt_version": "1",
+                "runtime_id": runtime_id,
+                "runtime_kind": "databricks-connect",
+                "databricks_line": "16.4",
+                "python_line": "3.12",
+                "install_root": str(receipt_path.parent),
+                "launcher_contract_path": str(home.kernels_dir / "scala212-dbr-connect" / "launcher-contract.json"),
+                "installed_at": "2026-03-22T00:00:00+00:00",
+                "status": "materialized",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtimes = list_installed_runtimes(home=home)
+    checks = doctor_installed_runtimes(home=home)
+
+    assert [runtime.runtime_id for runtime in runtimes] == [runtime_id]
+    assert [(check.name, check.status) for check in checks] == [(runtime_id, "ok")]
