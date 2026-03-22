@@ -2,20 +2,20 @@
 
 Support claims for this tool should be compute-aware.
 
-## Policy
+## Verified Local And Offline Surfaces
 
-- do not claim generic "Databricks support" without naming compute mode
-- distinguish classic clusters from serverless execution paths
-- key runtime identities by Databricks line, Python line, and when relevant Scala and JDK line
-- tie support statements to explicit package version lines
+| Surface | Status | Evidence |
+|---------|--------|----------|
+| Python packaging metadata | verified locally | `python/pyproject.toml` and CI artifact validation |
+| sdist and wheel builds | verified locally | `python-ci` builds both artifacts on every push and pull request |
+| clean-wheel install and CLI smoke checks | verified locally | `python-ci` installs the built wheel into a clean virtualenv |
+| notebook conversion, rendering, and runtime inventory helpers | verified locally | `python/tests/unit` exercises these local and offline paths |
 
-## Initial State
+## Unverified Compute-Mode Surfaces
 
-This repository does not yet publish a supported runtime matrix. The current tranche only establishes the documentation location and the rule that support claims must be explicit.
+Compute-mode support is not yet claimed.
 
-## Future Matrix Shape
-
-| Tool version | Databricks line | Python | Scala | Compute mode | Status | Notes |
-|--------------|-----------------|--------|-------|--------------|--------|-------|
-| TBD | TBD | TBD | TBD | classic cluster | planned | populate after runtime manager lands |
-| TBD | TBD | TBD | TBD | serverless | planned | record known limitations separately |
+| Compute mode | Status | Notes |
+|--------------|--------|-------|
+| classic cluster | not yet claimed | no release claim today |
+| serverless | not yet claimed | no release claim today |

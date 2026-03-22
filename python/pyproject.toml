@@ -5,9 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "databricks-agent-notebooks"
 version = "0.1.0"
-description = "Standalone notebook conversion and execution tooling for Databricks."
+description = "Standalone notebook conversion and local runtime tooling for the databricks-agent-notebooks repository."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Swoop" },
+]
+keywords = ["databricks", "jupyter", "notebook"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
 dependencies = [
   "jupytext>=1.16",
   "nbconvert>=7.16",
@@ -23,6 +34,11 @@ dev = [
 
 [project.scripts]
 agent-notebook = "databricks_agent_notebooks.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/swoop-inc/databricks-agent-notebooks"
+Repository = "https://github.com/swoop-inc/databricks-agent-notebooks"
+Issues = "https://github.com/swoop-inc/databricks-agent-notebooks/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

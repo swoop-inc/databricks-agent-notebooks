@@ -1,6 +1,6 @@
 # databricks-agent-notebooks
 
-Standalone notebook conversion and execution tooling for Databricks, structured as a language-neutral repository from day one.
+Standalone notebook conversion and local/offline runtime tooling, structured as a language-neutral repository from day one.
 
 ## Repository Layout
 
@@ -17,13 +17,14 @@ The current extraction intentionally ships one active Python distribution:
 - import package: `databricks_agent_notebooks`
 - CLI: `agent-notebook`
 
-The Python lane already contains:
+Verified local and offline surfaces today:
 
 - notebook format conversion helpers
-- narrow execution and rendering helpers
-- Databricks integration helpers
+- narrow local execution and rendering helpers
 - runtime-home and manifest primitives for tool-owned managed assets
 - read-only runtime inventory commands via `agent-notebook runtimes list|doctor`
+
+Databricks compute-mode support is not yet claimed. See [`docs/databricks-support-matrix.md`](docs/databricks-support-matrix.md) for the split between verified local/offline surfaces and unverified compute-mode surfaces.
 
 ## Local Development
 

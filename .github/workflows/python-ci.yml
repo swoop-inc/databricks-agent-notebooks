@@ -34,8 +34,43 @@ jobs:
       - name: Build distribution artifacts
         run: |
           python -m pip install --upgrade pip
-          python -m pip install build
+          python -m pip install build twine
           python -m build
+      - name: Validate artifact metadata
+        run: python -m twine check --strict dist/*
+      - name: Validate sdist and wheel contents
+        run: |
+          python - <<'PY'
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          dist_dir = Path("dist")
+          sdists = sorted(dist_dir.glob("*.tar.gz"))
+          wheels = sorted(dist_dir.glob("*.whl"))
+
+          assert len(sdists) == 1, sdists
+          assert len(wheels) == 1, wheels
+
+          sdist = sdists[0]
+          with tarfile.open(sdist) as tar:
+              names = set(tar.getnames())
+
+          root = sdist.name.removesuffix(".tar.gz")
+          assert f"{root}/pyproject.toml" in names
+          assert f"{root}/README.md" in names
+          assert f"{root}/LICENSE" in names
+          assert any(name.endswith("PKG-INFO") for name in names)
+
+          wheel = wheels[0]
+          with zipfile.ZipFile(wheel) as archive:
+              wheel_names = set(archive.namelist())
+
+          assert "databricks_agent_notebooks/__init__.py" in wheel_names
+          assert any(name.endswith(".dist-info/METADATA") for name in wheel_names)
+          assert any(name.endswith(".dist-info/entry_points.txt") for name in wheel_names)
+          assert any(name.endswith("dist-info/licenses/LICENSE") for name in wheel_names)
+          PY
       - name: Install built wheel into clean venv
         run: |
           python -m venv .artifact-venv
@@ -46,3 +81,9 @@ jobs:
           .artifact-venv/bin/python -m databricks_agent_notebooks help
           .artifact-venv/bin/agent-notebook help
           .artifact-venv/bin/python -m jupyter nbconvert --help
+      - name: Upload built artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: python/dist/*
+          if-no-files-found: error
