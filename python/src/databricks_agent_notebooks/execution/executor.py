@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from databricks_agent_notebooks.runtime.home import resolve_runtime_home
+
 
 @dataclass(frozen=True)
 class ExecutionResult:
@@ -81,6 +83,14 @@ def execute_notebook(
     # not pick up a local Spark installation.
     env = os.environ.copy()
     env.pop("SPARK_HOME", None)
+    runtime_data_dir = str(resolve_runtime_home(env).kernels_dir.parent)
+    existing_jupyter_path = env.get("JUPYTER_PATH")
+    if existing_jupyter_path:
+        search_paths = existing_jupyter_path.split(os.pathsep)
+        if runtime_data_dir not in search_paths:
+            env["JUPYTER_PATH"] = os.pathsep.join([runtime_data_dir, *search_paths])
+    else:
+        env["JUPYTER_PATH"] = runtime_data_dir
 
     start = time.monotonic()
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)  # noqa: S603

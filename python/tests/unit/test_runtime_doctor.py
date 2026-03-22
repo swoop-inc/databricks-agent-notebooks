@@ -105,3 +105,34 @@ def test_run_checks_reports_missing_java_and_kernel(tmp_path: Path) -> None:
     assert statuses["databricks_cli"] == "fail"
     assert statuses["java"] == "fail"
     assert "install-kernel" in messages["kernel"]
+
+
+def test_check_profile_default_requires_real_default_entries(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.doctor import check_profile
+
+    home = tmp_path / "home"
+    cfg = home / ".databrickscfg"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("[DEV]\nhost = https://example.com\ntoken = abc\n", encoding="utf-8")
+
+    with patch("databricks_agent_notebooks.runtime.doctor.Path.home", return_value=home):
+        check = check_profile("DEFAULT")
+
+    assert check.status == "fail"
+    assert "DEFAULT" in check.message
+
+
+def test_check_profile_honors_databricks_config_file(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.doctor import check_profile
+
+    cfg = tmp_path / "custom-databricks.cfg"
+    cfg.write_text("[PROD]\nhost = https://example.com\ntoken = abc\n", encoding="utf-8")
+
+    with (
+        patch("databricks_agent_notebooks.runtime.doctor.Path.home", return_value=tmp_path / "home"),
+        patch.dict("databricks_agent_notebooks.runtime.doctor.os.environ", {"DATABRICKS_CONFIG_FILE": str(cfg)}, clear=True),
+    ):
+        check = check_profile("PROD")
+
+    assert check.status == "ok"
+    assert "PROD" in check.message

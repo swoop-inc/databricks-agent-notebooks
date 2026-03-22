@@ -134,19 +134,31 @@ def check_databricks_cli() -> Check:
     return Check("databricks_cli", "fail", "databricks CLI not found on PATH")
 
 
-def check_profile(profile: str) -> Check:
-    cfg_path = Path.home() / ".databrickscfg"
+def _resolve_databricks_cfg_path(environ: Mapping[str, str] | None = None) -> Path:
+    env_map = dict(os.environ)
+    if environ is not None:
+        env_map.update(environ)
+    override = env_map.get("DATABRICKS_CONFIG_FILE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".databrickscfg"
+
+
+def check_profile(profile: str, environ: Mapping[str, str] | None = None) -> Check:
+    cfg_path = _resolve_databricks_cfg_path(environ)
     if not cfg_path.is_file():
-        return Check("profile", "fail", f"~/.databrickscfg not found — cannot verify profile '{profile}'")
+        return Check("profile", "fail", f"{cfg_path} not found — cannot verify profile '{profile}'")
 
     config = configparser.ConfigParser()
     config.read(cfg_path, encoding="utf-8")
 
     if profile == config.default_section:
-        return Check("profile", "ok", f"profile '{profile}' found in ~/.databrickscfg")
+        if config.defaults():
+            return Check("profile", "ok", f"profile '{profile}' found in {cfg_path}")
+        return Check("profile", "fail", f"profile '{profile}' not found in {cfg_path}")
     if config.has_section(profile):
-        return Check("profile", "ok", f"profile '{profile}' found in ~/.databrickscfg")
-    return Check("profile", "fail", f"profile '{profile}' not found in ~/.databrickscfg")
+        return Check("profile", "ok", f"profile '{profile}' found in {cfg_path}")
+    return Check("profile", "fail", f"profile '{profile}' not found in {cfg_path}")
 
 
 def _parse_java_major_version(output: str) -> int | None:
@@ -207,5 +219,5 @@ def run_checks(
         check_java(),
     ]
     if profile is not None:
-        checks.append(check_profile(profile))
+        checks.append(check_profile(profile, environ=environ))
     return checks

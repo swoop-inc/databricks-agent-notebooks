@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from databricks_agent_notebooks.execution.executor import ExecutionResult, execute_notebook
+from databricks_agent_notebooks.runtime.home import HOME_ENV_VAR
 
 
 @pytest.fixture()
@@ -39,6 +40,18 @@ def test_spark_home_is_removed_from_env(mock_run, notebook_path: Path) -> None:
 
     env = mock_run.call_args[1]["env"]
     assert "SPARK_HOME" not in env
+
+
+@patch("databricks_agent_notebooks.execution.executor.subprocess.run")
+def test_runtime_home_kernel_path_is_added_to_jupyter_search_path(mock_run, notebook_path: Path, tmp_path: Path) -> None:
+    mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    runtime_home = tmp_path / "runtime-home"
+
+    with patch.dict(os.environ, {HOME_ENV_VAR: str(runtime_home)}, clear=False):
+        execute_notebook(notebook_path, kernel="scala212-dbr-connect")
+
+    env = mock_run.call_args[1]["env"]
+    assert env["JUPYTER_PATH"] == str(runtime_home / "data")
 
 
 @patch("databricks_agent_notebooks.execution.executor.subprocess.run")
