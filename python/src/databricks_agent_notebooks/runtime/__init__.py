@@ -1,1 +1,1 @@
-"""Managed runtime-home primitives and durable manifest models."""
+"""Managed runtime-home primitives, kernel installers, and doctor checks."""

@@ -12,7 +12,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 
 from databricks_agent_notebooks.config.frontmatter import DatabricksConfig, merge_config
@@ -21,26 +20,10 @@ from databricks_agent_notebooks.execution.injection import inject_cells
 from databricks_agent_notebooks.execution.rendering import render
 from databricks_agent_notebooks.formats.conversion import to_notebook, validate_single_language
 from databricks_agent_notebooks.integrations.databricks.clusters import ClusterError, default_service
+from databricks_agent_notebooks.runtime.doctor import Check, run_checks
+from databricks_agent_notebooks.runtime.kernel import install_kernel
 
 import nbformat
-
-
-@dataclass(frozen=True)
-class Check:
-    name: str
-    status: str
-    message: str
-
-
-def run_checks(profile: str | None = None) -> list[Check]:
-    del profile
-    return [Check("runtime", "ok", "basic standalone tranche checks not yet expanded")]
-
-
-def install_kernel(kernels_dir: Path | None = None) -> Path:
-    target = kernels_dir or Path.cwd() / ".kernels"
-    target.mkdir(parents=True, exist_ok=True)
-    return target
 
 
 # ---------------------------------------------------------------------------

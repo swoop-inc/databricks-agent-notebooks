@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from databricks_agent_notebooks.cli import main
 from databricks_agent_notebooks.config.frontmatter import DatabricksConfig
 from databricks_agent_notebooks.integrations.databricks.clusters import Cluster
+from databricks_agent_notebooks.runtime.doctor import Check
 
 
 def _make_notebook_mock():
@@ -50,3 +51,30 @@ def test_run_pipeline_delegates(tmp_path: Path, capsys) -> None:
 
     assert result == 0
     assert "Execution succeeded" in capsys.readouterr().out
+
+
+def test_install_kernel_command_delegates(tmp_path: Path, capsys) -> None:
+    kernel_dir = tmp_path / "kernels" / "scala212-dbr-connect"
+
+    with patch("databricks_agent_notebooks.cli.install_kernel", return_value=kernel_dir) as install_kernel:
+        result = main(["install-kernel", "--kernels-dir", str(tmp_path / "kernels")])
+
+    assert result == 0
+    install_kernel.assert_called_once_with(kernels_dir=tmp_path / "kernels")
+    assert "Kernel installed" in capsys.readouterr().out
+
+
+def test_doctor_command_prints_failures(capsys) -> None:
+    checks = [
+        Check("coursier", "ok", "coursier found"),
+        Check("kernel", "fail", "kernel missing"),
+    ]
+
+    with patch("databricks_agent_notebooks.cli.run_checks", return_value=checks) as run_checks:
+        result = main(["doctor", "--profile", "DEFAULT"])
+
+    assert result == 1
+    run_checks.assert_called_once_with(profile="DEFAULT")
+    captured = capsys.readouterr()
+    assert "[FAIL] kernel" in captured.out
+    assert "1 check(s) failed." in captured.err
