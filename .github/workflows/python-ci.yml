@@ -76,11 +76,10 @@ jobs:
           python -m venv .artifact-venv
           .artifact-venv/bin/python -m pip install --upgrade pip
           .artifact-venv/bin/pip install dist/*.whl
-      - name: Smoke test installed artifact
+      - name: Proof installed artifact offline installer flows
         run: |
-          .artifact-venv/bin/python -m databricks_agent_notebooks help
           .artifact-venv/bin/agent-notebook help
-          .artifact-venv/bin/python -m jupyter nbconvert --help
+          .artifact-venv/bin/python scripts/installed_artifact_installer_proof.py
       - name: Upload built artifacts
         uses: actions/upload-artifact@v4
         with:

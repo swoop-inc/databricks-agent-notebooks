@@ -76,6 +76,7 @@ def test_python_ci_validates_built_artifacts() -> None:
     assert "Validate sdist and wheel contents" in workflow_text
     assert "dist-info/licenses/LICENSE" in workflow_text
     assert ".artifact-venv/bin/pip install dist/*.whl" in workflow_text
+    assert "scripts/installed_artifact_installer_proof.py" in workflow_text
     assert "upload-artifact" in workflow_text
 
 
@@ -92,12 +93,15 @@ def test_release_docs_only_make_verified_support_claims() -> None:
     assert "Verified Today" in release_text
     assert "sdist and wheel builds" in release_text
     assert "twine metadata validation" in release_text
-    assert "clean-wheel smoke install" in release_text
+    assert "agent-notebook kernels install" in release_text
+    assert "isolated local runtime-home" in release_text
     assert "publishing" in release_text.lower()
     assert "deferred" in release_text.lower()
     assert "ci validates artifacts" in release_text.lower()
 
     assert "Verified Local And Offline Surfaces" in matrix_text
+    assert "offline installer proof" in matrix_text
+    assert "launcher contract, kernel receipt, runtime receipt" in matrix_text
     assert "Unverified Compute-Mode Surfaces" in matrix_text
     assert "classic cluster" in matrix_text
     assert "serverless" in matrix_text

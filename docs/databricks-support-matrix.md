@@ -8,8 +8,11 @@ Support claims for this tool should be compute-aware.
 |---------|--------|----------|
 | Python packaging metadata | verified locally | `python/pyproject.toml` and CI artifact validation |
 | sdist and wheel builds | verified locally | `python-ci` builds both artifacts on every push and pull request |
-| clean-wheel install and CLI smoke checks | verified locally | `python-ci` installs the built wheel into a clean virtualenv |
+| clean-wheel install and offline installer proof | verified locally | `python-ci` installs the built wheel into a clean virtualenv and runs `scripts/installed_artifact_installer_proof.py` against an isolated runtime-home and explicit kernels dir |
+| managed kernel and runtime receipt cross-references | verified locally | installed-wheel proof validates launcher contract, kernel receipt, runtime receipt, and kernelspec metadata from the built artifact context |
 | notebook conversion, rendering, and runtime inventory helpers | verified locally | `python/tests/unit` exercises these local and offline paths |
+
+These claims remain limited to offline artifact verification. They do not claim live Databricks connectivity or any compute-mode behavior.
 
 ## Unverified Compute-Mode Surfaces
 
