@@ -55,7 +55,7 @@ def test_patch_kernel_json_adds_flag_and_clears_spark_home(tmp_path: Path) -> No
         "--connection-file",
         "{connection_file}",
     ]
-    assert data.get("env", {}) == {}
+    assert data.get("env", {}) == {"EXISTING": "1"}
     metadata = data["metadata"]["databricks_agent_notebooks"]
     assert metadata["launcher_contract_path"] == str(contract_path)
     assert metadata["receipt_path"] == str(receipt_path)
@@ -189,6 +189,102 @@ def test_install_kernel_uses_runtime_home_by_default(tmp_path: Path) -> None:
     kernel_json = json.loads((kernel_dir / "kernel.json").read_text(encoding="utf-8"))
     assert kernel_json["argv"] == contract["argv"]
     assert kernel_json.get("env", {}) == {}
+
+
+def test_install_kernel_with_relative_prefix_serializes_absolute_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from databricks_agent_notebooks.runtime.kernel import CONTRACT_FILENAME, install_kernel
+
+    monkeypatch.chdir(tmp_path)
+    relative_prefix = Path("relative-prefix")
+    expected_target_dir = (tmp_path / relative_prefix / "share" / "jupyter" / "kernels").resolve()
+    expected_kernel_dir = expected_target_dir / "custom-scala"
+    expected_contract_path = expected_kernel_dir / CONTRACT_FILENAME
+    home = _make_runtime_home(tmp_path / "runtime-home")
+    expected_receipt_path = (home.installations_dir / "kernels" / "custom-scala.json").resolve()
+
+    def fake_run(*_args, **_kwargs) -> None:
+        expected_kernel_dir.mkdir(parents=True)
+        (expected_kernel_dir / "kernel.json").write_text(
+            json.dumps(
+                {
+                    "argv": ["/usr/bin/java", "coursier", "--connection-file", "{connection_file}"],
+                    "display_name": "Custom Scala",
+                    "language": "scala",
+                    "env": {"SPARK_HOME": "/opt/spark"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    with (
+        patch("databricks_agent_notebooks.runtime.kernel.resolve_runtime_home", return_value=home),
+        patch("databricks_agent_notebooks.runtime.kernel.ensure_runtime_home", return_value=home),
+        patch("databricks_agent_notebooks.runtime.kernel.find_coursier", return_value="/opt/bin/coursier"),
+        patch("databricks_agent_notebooks.runtime.kernel.subprocess.run", side_effect=fake_run),
+    ):
+        install_kernel(
+            kernel_id="custom-scala",
+            display_name="Custom Scala",
+            prefix=relative_prefix,
+        )
+
+    contract = json.loads(expected_contract_path.read_text(encoding="utf-8"))
+    receipt = json.loads(expected_receipt_path.read_text(encoding="utf-8"))
+    kernel_json = json.loads((expected_kernel_dir / "kernel.json").read_text(encoding="utf-8"))
+
+    assert contract["argv"][4] == str(expected_contract_path)
+    assert contract["runtime_receipt_path"] == str((home.runtimes_dir / contract["runtime_id"] / "runtime-receipt.json").resolve())
+    assert receipt["install_dir"] == str(expected_kernel_dir)
+    assert receipt["launcher_contract_path"] == str(expected_contract_path)
+    metadata = kernel_json["metadata"]["databricks_agent_notebooks"]
+    assert metadata["launcher_contract_path"] == str(expected_contract_path)
+    assert metadata["receipt_path"] == str(expected_receipt_path)
+
+
+def test_install_kernel_preserves_non_spark_env_entries(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.kernel import CONTRACT_FILENAME, install_kernel
+
+    home = _make_runtime_home(tmp_path / "runtime-home")
+    kernel_dir = home.kernels_dir / "custom-scala"
+    contract_path = kernel_dir / CONTRACT_FILENAME
+
+    def fake_run(*_args, **_kwargs) -> None:
+        kernel_dir.mkdir(parents=True)
+        (kernel_dir / "kernel.json").write_text(
+            json.dumps(
+                {
+                    "argv": ["/usr/bin/java", "coursier", "--connection-file", "{connection_file}"],
+                    "display_name": "Custom Scala",
+                    "language": "scala",
+                    "env": {
+                        "EXISTING": "1",
+                        "ANOTHER_ENV": "two",
+                        "SPARK_HOME": "/opt/spark",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    with (
+        patch("databricks_agent_notebooks.runtime.kernel.resolve_runtime_home", return_value=home),
+        patch("databricks_agent_notebooks.runtime.kernel.ensure_runtime_home", return_value=home),
+        patch("databricks_agent_notebooks.runtime.kernel.find_coursier", return_value="/opt/bin/coursier"),
+        patch("databricks_agent_notebooks.runtime.kernel.subprocess.run", side_effect=fake_run),
+    ):
+        install_kernel(
+            kernel_id="custom-scala",
+            display_name="Custom Scala",
+        )
+
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    kernel_json = json.loads((kernel_dir / "kernel.json").read_text(encoding="utf-8"))
+
+    assert contract["env"] == {"EXISTING": "1", "ANOTHER_ENV": "two"}
+    assert kernel_json["env"] == {"EXISTING": "1", "ANOTHER_ENV": "two"}
 
 
 def test_install_kernel_requires_coursier(tmp_path: Path) -> None:
@@ -479,6 +575,46 @@ def test_verify_kernel_reports_missing_runtime_receipt(tmp_path: Path) -> None:
     issues = verify_kernel(tmp_path, kernel_id=kernel_id)
 
     assert any("runtime receipt" in issue.lower() for issue in issues)
+
+
+def test_verify_kernel_accepts_symlinked_prefix_install(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.runtime.kernel import install_kernel, verify_kernel
+
+    real_prefix = tmp_path / "real-prefix"
+    real_prefix.mkdir()
+    symlink_prefix = tmp_path / "linked-prefix"
+    symlink_prefix.symlink_to(real_prefix, target_is_directory=True)
+    target_dir = symlink_prefix / "share" / "jupyter" / "kernels"
+    home = _make_runtime_home(tmp_path / "runtime-home")
+
+    def fake_run(*_args, **_kwargs) -> None:
+        kernel_dir = target_dir / "custom-scala"
+        kernel_dir.mkdir(parents=True)
+        (kernel_dir / "kernel.json").write_text(
+            json.dumps(
+                {
+                    "argv": ["/usr/bin/java", "coursier", "--connection-file", "{connection_file}"],
+                    "display_name": "Custom Scala",
+                    "language": "scala",
+                    "env": {"SPARK_HOME": "/opt/spark"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    with (
+        patch("databricks_agent_notebooks.runtime.kernel.resolve_runtime_home", return_value=home),
+        patch("databricks_agent_notebooks.runtime.kernel.ensure_runtime_home", return_value=home),
+        patch("databricks_agent_notebooks.runtime.kernel.find_coursier", return_value="/opt/bin/coursier"),
+        patch("databricks_agent_notebooks.runtime.kernel.subprocess.run", side_effect=fake_run),
+    ):
+        install_kernel(
+            kernel_id="custom-scala",
+            display_name="Custom Scala",
+            prefix=symlink_prefix,
+        )
+
+    assert verify_kernel(target_dir, kernel_id="custom-scala") == []
 
 
 def test_list_installed_kernels_reports_runtime_home_and_overrides(tmp_path: Path) -> None:

@@ -9,7 +9,8 @@
     "language",
     "argv",
     "runtime_id",
-    "runtime_receipt_path"
+    "runtime_receipt_path",
+    "bootstrap_argv"
   ],
   "properties": {
     "contract_version": { "type": "string" },

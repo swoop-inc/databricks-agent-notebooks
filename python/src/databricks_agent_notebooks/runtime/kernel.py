@@ -90,12 +90,30 @@ def _normalize_bootstrap_argv(argv: object) -> list[str]:
     return normalized
 
 
+def _normalize_kernel_env(env: object) -> dict[str, str]:
+    if not isinstance(env, dict):
+        return {}
+    return {str(key): str(value) for key, value in env.items() if str(key) != "SPARK_HOME"}
+
+
+def _paths_refer_to_same_location(left: Path | str, right: Path | str) -> bool:
+    left_path = Path(left)
+    right_path = Path(right)
+    try:
+        if left_path.exists() and right_path.exists():
+            return left_path.samefile(right_path)
+    except OSError:
+        pass
+    return left_path.resolve() == right_path.resolve()
+
+
 def _contract_for_kernel(
     contract_path: Path,
     *,
     kernel_id: str,
     display_name: str,
     language: str,
+    env: dict[str, str],
     bootstrap_argv: list[str],
     runtime_receipt: RuntimeInstallReceipt,
 ) -> LauncherKernelContract:
@@ -106,7 +124,7 @@ def _contract_for_kernel(
         display_name=display_name,
         language=language,
         argv=launcher_argv,
-        env={},
+        env=env,
         runtime_id=runtime_receipt.runtime_id,
         runtime_receipt_path=str(Path(runtime_receipt.install_root) / "runtime-receipt.json"),
         launcher_path=launcher_argv[0],
@@ -122,8 +140,12 @@ def _write_kernel_json(
 ) -> dict[str, object]:
     kernel_json_path = kernel_dir / "kernel.json"
     data = json.loads(kernel_json_path.read_text(encoding="utf-8"))
+    normalized_env = _normalize_kernel_env(data.get("env"))
     data["argv"] = build_launcher_argv(contract_path)
-    data.pop("env", None)
+    if normalized_env:
+        data["env"] = normalized_env
+    else:
+        data.pop("env", None)
 
     metadata = _kernel_metadata(data)
     metadata["launcher_contract_path"] = str(contract_path)
@@ -313,13 +335,14 @@ def install_kernel(
 
     subprocess.run(command, check=True)
 
-    kernel_dir = target_dir / kernel_id
-    contract_path = kernel_dir / CONTRACT_FILENAME
-    receipt_path = _receipt_path(home.root, kernel_id)
+    kernel_dir = (target_dir / kernel_id).resolve()
+    contract_path = (kernel_dir / CONTRACT_FILENAME).resolve()
+    receipt_path = _receipt_path(home.root, kernel_id).resolve()
     runtime_receipt = materialize_runtime_installation(home)
     runtime_receipt_path = managed_runtime_receipt_path(home, runtime_receipt.runtime_id)
     existing_data = _read_kernel_json(kernel_dir)
     bootstrap_argv = _normalize_bootstrap_argv(existing_data.get("argv"))
+    kernel_env = _normalize_kernel_env(existing_data.get("env"))
     display_name_value = str(existing_data.get("display_name", display_name))
     language_value = str(existing_data.get("language", "scala"))
     data = patch_kernel_json(kernel_dir, contract_path=contract_path, receipt_path=receipt_path)
@@ -329,6 +352,7 @@ def install_kernel(
         kernel_id=kernel_id,
         display_name=display_name_value,
         language=language_value,
+        env=kernel_env,
         bootstrap_argv=bootstrap_argv,
         runtime_receipt=runtime_receipt,
     )
@@ -423,14 +447,20 @@ def patch_kernel_json(
     receipt_path: Path | None = None,
 ) -> dict[str, object]:
     """Rewrite an installed kernelspec onto the managed launcher boundary."""
-    resolved_contract_path = contract_path or (kernel_dir / CONTRACT_FILENAME)
+    kernel_dir = kernel_dir.resolve()
+    resolved_contract_path = (contract_path or (kernel_dir / CONTRACT_FILENAME)).resolve()
     metadata_contract_path, metadata_receipt_path = _kernel_metadata_paths(_read_kernel_json(kernel_dir))
+    if metadata_contract_path is not None:
+        metadata_contract_path = metadata_contract_path.resolve()
+    if metadata_receipt_path is not None:
+        metadata_receipt_path = metadata_receipt_path.resolve()
     resolved_receipt_path = receipt_path or metadata_receipt_path
     if resolved_receipt_path is None:
         raise ValueError("receipt_path is required when rewriting kernel.json")
+    resolved_receipt_path = resolved_receipt_path.resolve()
     return _write_kernel_json(
         kernel_dir,
-        contract_path=resolved_contract_path or metadata_contract_path or (kernel_dir / CONTRACT_FILENAME),
+        contract_path=resolved_contract_path or metadata_contract_path or (kernel_dir / CONTRACT_FILENAME).resolve(),
         receipt_path=resolved_receipt_path,
     )
 
@@ -513,13 +543,19 @@ def verify_kernel(
                 issues.append(
                     f"kernel receipt kernel_id mismatch: expected {kernel_id}, found {receipt.kernel_id}"
                 )
-            if receipt.install_dir != str(kernel_dir):
+            if not _paths_refer_to_same_location(kernel_dir, receipt.install_dir):
                 issues.append("kernel receipt install_dir does not match kernel directory")
             if contract is not None and receipt.runtime_id != contract.runtime_id:
                 issues.append("kernel receipt runtime_id does not match launcher contract")
-            if runtime_receipt_path is not None and receipt.runtime_receipt_path != str(runtime_receipt_path):
+            if runtime_receipt_path is not None and not _paths_refer_to_same_location(
+                runtime_receipt_path,
+                receipt.runtime_receipt_path,
+            ):
                 issues.append("kernel receipt runtime_receipt_path does not match launcher contract")
-            if contract_path is not None and receipt.launcher_contract_path != str(contract_path):
+            if contract_path is not None and not _paths_refer_to_same_location(
+                contract_path,
+                receipt.launcher_contract_path,
+            ):
                 issues.append("kernel receipt launcher_contract_path does not match kernel metadata")
 
     if runtime_receipt_path is not None and runtime_receipt_path.is_file():
@@ -531,7 +567,7 @@ def verify_kernel(
             if contract is not None and runtime_receipt.runtime_id != contract.runtime_id:
                 issues.append("runtime receipt runtime_id does not match launcher contract")
             expected_runtime_root = runtime_receipt_path.parent
-            if runtime_receipt.install_root != str(expected_runtime_root):
+            if not _paths_refer_to_same_location(expected_runtime_root, runtime_receipt.install_root):
                 issues.append("runtime receipt install_root does not match runtime directory")
 
     return issues
