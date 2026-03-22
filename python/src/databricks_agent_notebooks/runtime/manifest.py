@@ -19,6 +19,7 @@ class LauncherKernelContract:
     argv: list[str]
     env: dict[str, str]
     runtime_id: str
+    runtime_receipt_path: str
     launcher_path: str
     bootstrap_argv: list[str] | None = None
 
@@ -38,7 +39,6 @@ class RuntimeInstallReceipt:
     databricks_line: str
     python_line: str
     install_root: str
-    launcher_contract_path: str
     installed_at: str
     status: str
 
@@ -57,6 +57,8 @@ class KernelArtifactReceipt:
     display_name: str
     language: str
     install_dir: str
+    runtime_id: str
+    runtime_receipt_path: str
     launcher_contract_path: str
     installed_at: str
 

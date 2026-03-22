@@ -20,6 +20,7 @@ def test_launcher_kernel_contract_round_trips() -> None:
         argv=["python", "-m", "databricks_agent_notebooks"],
         env={"SPARK_HOME": ""},
         runtime_id="dbr-16.4-python-3.12",
+        runtime_receipt_path="data/runtimes/dbr-16.4-python-3.12/runtime-receipt.json",
         launcher_path="bin/scala-kernel-launcher",
         bootstrap_argv=["java", "--connection-file", "{connection_file}"],
     )
@@ -33,13 +34,12 @@ def test_runtime_install_receipt_round_trips_on_disk(tmp_path: Path) -> None:
     receipt = RuntimeInstallReceipt(
         receipt_version="1",
         runtime_id="dbr-16.4-python-3.12",
-        runtime_kind="python",
+        runtime_kind="databricks-connect",
         databricks_line="16.4",
         python_line="3.12",
         install_root="data/runtimes/dbr-16.4-python-3.12",
-        launcher_contract_path="contracts/runtime.json",
         installed_at="2026-03-22T12:00:00+00:00",
-        status="healthy",
+        status="materialized",
     )
     receipt_path = tmp_path / "runtime.json"
 
@@ -56,6 +56,8 @@ def test_kernel_artifact_receipt_round_trips_on_disk(tmp_path: Path) -> None:
         display_name="Scala 2.12 (Databricks Connect)",
         language="scala",
         install_dir="data/kernels/specs/scala212-dbr-connect",
+        runtime_id="dbr-16.4-python-3.12",
+        runtime_receipt_path="data/runtimes/dbr-16.4-python-3.12/runtime-receipt.json",
         launcher_contract_path="contracts/scala212-dbr-connect.json",
         installed_at="2026-03-22T12:00:00+00:00",
     )
@@ -74,6 +76,8 @@ def test_json_record_writer_creates_parent_directories(tmp_path: Path) -> None:
         display_name="Python 3",
         language="python",
         install_dir="data/kernels/specs/python3-dbr-connect",
+        runtime_id="dbr-16.4-python-3.12",
+        runtime_receipt_path="data/runtimes/dbr-16.4-python-3.12/runtime-receipt.json",
         launcher_contract_path="contracts/python3-dbr-connect.json",
         installed_at="2026-03-22T12:00:00+00:00",
     )

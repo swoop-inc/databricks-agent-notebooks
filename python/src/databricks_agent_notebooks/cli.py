@@ -21,6 +21,7 @@ from databricks_agent_notebooks.execution.rendering import render
 from databricks_agent_notebooks.formats.conversion import to_notebook, validate_single_language
 from databricks_agent_notebooks.integrations.databricks.clusters import ClusterError, default_service
 from databricks_agent_notebooks.runtime.doctor import Check, run_checks
+from databricks_agent_notebooks.runtime.inventory import doctor_installed_runtimes, list_installed_runtimes
 from databricks_agent_notebooks.runtime.kernel import (
     KERNEL_DISPLAY_NAME,
     KERNEL_ID,
@@ -113,6 +114,13 @@ def _build_parser() -> argparse.ArgumentParser:
     kernels_doctor.add_argument("--profile", default=None, help="Databricks CLI profile to validate")
     kernels_doctor.add_argument("--jupyter-path", default=None, help="Validate an explicit Jupyter kernels directory")
     kernels_doctor.add_argument("--kernels-dir", default=None, help=argparse.SUPPRESS)
+
+    # -- runtimes --
+    runtimes = subparsers.add_parser("runtimes", help="Inspect managed runtimes recorded under runtime-home")
+    runtime_subparsers = runtimes.add_subparsers(dest="runtimes_command", required=True)
+
+    runtime_subparsers.add_parser("list", help="List managed runtimes from runtime-home receipts")
+    runtime_subparsers.add_parser("doctor", help="Validate managed runtime receipts and install roots")
 
     # -- render --
     rnd = subparsers.add_parser("render", help="Render an already-executed notebook")
@@ -338,12 +346,16 @@ def _cmd_kernels_list(args: argparse.Namespace) -> int:
         print("No kernels installed.")
         return 0
 
-    print(f"{'NAME':<24} {'SOURCE':<20} {'LAUNCHER':<18} {'CONTRACT':<18} {'RECEIPT':<18} DIRECTORY")
+    print(f"{'NAME':<24} {'SOURCE':<20} {'RUNTIME':<24} {'LAUNCHER':<18} {'CONTRACT':<18} {'RECEIPT':<18} DIRECTORY")
     for kernel in kernels:
+        runtime_id = kernel.runtime_id or "missing"
         launcher = kernel.launcher_path or "missing"
         contract = str(kernel.launcher_contract_path) if kernel.launcher_contract_path is not None else "missing"
         receipt = str(kernel.receipt_path) if kernel.receipt_path is not None else "missing"
-        print(f"{kernel.name:<24} {kernel.source:<20} {launcher:<18} {contract:<18} {receipt:<18} {kernel.directory}")
+        print(
+            f"{kernel.name:<24} {kernel.source:<20} {runtime_id:<24} "
+            f"{launcher:<18} {contract:<18} {receipt:<18} {kernel.directory}"
+        )
     return 0
 
 
@@ -415,6 +427,48 @@ def _cmd_kernels(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+def _cmd_runtimes_list(_args: argparse.Namespace) -> int:
+    """List managed runtimes discovered from runtime-home receipts."""
+    runtimes = list_installed_runtimes()
+    if not runtimes:
+        print("No runtimes installed.")
+        return 0
+
+    print(f"{'RUNTIME ID':<24} {'STATUS':<16} {'DBR':<8} {'PYTHON':<8} {'RECEIPT':<18} INSTALL ROOT")
+    for runtime in runtimes:
+        print(
+            f"{runtime.runtime_id:<24} {runtime.status:<16} {runtime.databricks_line:<8} "
+            f"{runtime.python_line:<8} {runtime.receipt_path!s:<18} {runtime.install_root}"
+        )
+    return 0
+
+
+def _cmd_runtimes_doctor(_args: argparse.Namespace) -> int:
+    """Validate managed runtime receipts rooted under runtime-home."""
+    checks = doctor_installed_runtimes()
+    status_symbols = {"ok": "[ok]", "warn": "[!!]", "fail": "[FAIL]"}
+
+    for check in checks:
+        symbol = status_symbols.get(check.status, "[??]")
+        print(f"  {symbol} {check.name}: {check.message}")
+
+    failures = [check for check in checks if check.status == "fail"]
+    if failures:
+        print(f"\n{len(failures)} check(s) failed.", file=sys.stderr)
+        return 1
+
+    print("\nAll checks passed.")
+    return 0
+
+
+def _cmd_runtimes(args: argparse.Namespace) -> int:
+    handler = _RUNTIME_HANDLERS.get(args.runtimes_command)
+    if handler is None:
+        print(f"error: unknown runtimes command: {args.runtimes_command}", file=sys.stderr)
+        return 1
+    return handler(args)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -425,6 +479,7 @@ _HANDLERS = {
     "clusters": _cmd_clusters,
     "install-kernel": _cmd_install_kernel,
     "kernels": _cmd_kernels,
+    "runtimes": _cmd_runtimes,
     "render": _cmd_render,
     "doctor": _cmd_doctor,
 }
@@ -434,6 +489,11 @@ _KERNEL_HANDLERS = {
     "list": _cmd_kernels_list,
     "remove": _cmd_kernels_remove,
     "doctor": _cmd_kernels_doctor,
+}
+
+_RUNTIME_HANDLERS = {
+    "list": _cmd_runtimes_list,
+    "doctor": _cmd_runtimes_doctor,
 }
 
 

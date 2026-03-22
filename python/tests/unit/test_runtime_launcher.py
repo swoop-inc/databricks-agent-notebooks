@@ -28,7 +28,8 @@ def test_main_execs_bootstrap_from_contract_and_clears_spark_home(tmp_path: Path
                     "{connection_file}",
                 ],
                 "env": {},
-                "runtime_id": "scala212-dbr-connect",
+                "runtime_id": "dbr-16.4-python-3.12",
+                "runtime_receipt_path": str(tmp_path / "data" / "runtimes" / "dbr-16.4-python-3.12" / "runtime-receipt.json"),
                 "launcher_path": sys.executable,
                 "bootstrap_argv": [
                     "java",

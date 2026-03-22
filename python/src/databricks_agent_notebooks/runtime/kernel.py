@@ -12,10 +12,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from databricks_agent_notebooks.runtime.home import ensure_runtime_home, resolve_runtime_home
+from databricks_agent_notebooks.runtime.inventory import (
+    materialize_runtime_installation,
+    runtime_receipt_path as managed_runtime_receipt_path,
+)
 from databricks_agent_notebooks.runtime.launcher import LAUNCHER_MODULE, build_launcher_argv
 from databricks_agent_notebooks.runtime.manifest import (
     KernelArtifactReceipt,
     LauncherKernelContract,
+    RuntimeInstallReceipt,
     read_json_record,
     write_json_record,
 )
@@ -39,6 +44,8 @@ class InstalledKernel:
     launcher_contract_path: Path | None = None
     receipt_path: Path | None = None
     launcher_path: str | None = None
+    runtime_id: str | None = None
+    runtime_receipt_path: Path | None = None
 
 
 def _kernel_metadata(data: dict[str, object]) -> dict[str, str]:
@@ -90,6 +97,7 @@ def _contract_for_kernel(
     display_name: str,
     language: str,
     bootstrap_argv: list[str],
+    runtime_receipt: RuntimeInstallReceipt,
 ) -> LauncherKernelContract:
     launcher_argv = build_launcher_argv(contract_path)
     return LauncherKernelContract(
@@ -99,7 +107,8 @@ def _contract_for_kernel(
         language=language,
         argv=launcher_argv,
         env={},
-        runtime_id=kernel_id,
+        runtime_id=runtime_receipt.runtime_id,
+        runtime_receipt_path=str(Path(runtime_receipt.install_root) / "runtime-receipt.json"),
         launcher_path=launcher_argv[0],
         bootstrap_argv=bootstrap_argv,
     )
@@ -131,6 +140,35 @@ def _launcher_path_from_contract(contract_path: Path | None) -> str | None:
         return read_json_record(contract_path, LauncherKernelContract).launcher_path
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
+
+
+def _runtime_identity_from_artifacts(
+    contract_path: Path | None,
+    receipt_path: Path | None,
+) -> tuple[str | None, Path | None]:
+    runtime_id: str | None = None
+    runtime_receipt_path: Path | None = None
+
+    if contract_path is not None and contract_path.is_file():
+        try:
+            contract = read_json_record(contract_path, LauncherKernelContract)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+        else:
+            runtime_id = contract.runtime_id
+            runtime_receipt_path = Path(contract.runtime_receipt_path)
+
+    if receipt_path is not None and receipt_path.is_file():
+        try:
+            receipt = read_json_record(receipt_path, KernelArtifactReceipt)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+        else:
+            runtime_id = runtime_id or receipt.runtime_id
+            if runtime_receipt_path is None:
+                runtime_receipt_path = Path(receipt.runtime_receipt_path)
+
+    return runtime_id, runtime_receipt_path
 
 
 def load_launcher_contract(kernel_dir: Path) -> LauncherKernelContract | None:
@@ -278,6 +316,8 @@ def install_kernel(
     kernel_dir = target_dir / kernel_id
     contract_path = kernel_dir / CONTRACT_FILENAME
     receipt_path = _receipt_path(home.root, kernel_id)
+    runtime_receipt = materialize_runtime_installation(home)
+    runtime_receipt_path = managed_runtime_receipt_path(home, runtime_receipt.runtime_id)
     existing_data = _read_kernel_json(kernel_dir)
     bootstrap_argv = _normalize_bootstrap_argv(existing_data.get("argv"))
     display_name_value = str(existing_data.get("display_name", display_name))
@@ -290,6 +330,7 @@ def install_kernel(
         display_name=display_name_value,
         language=language_value,
         bootstrap_argv=bootstrap_argv,
+        runtime_receipt=runtime_receipt,
     )
 
     write_json_record(
@@ -304,6 +345,8 @@ def install_kernel(
             display_name=str(data.get("display_name", display_name_value)),
             language=str(data.get("language", language_value)),
             install_dir=str(kernel_dir),
+            runtime_id=runtime_receipt.runtime_id,
+            runtime_receipt_path=str(runtime_receipt_path),
             launcher_contract_path=str(contract_path),
             installed_at=installed_at,
         ),
@@ -329,6 +372,7 @@ def list_installed_kernels(
                 continue
             data = _read_kernel_json(child)
             contract_path, receipt_path = _kernel_metadata_paths(data)
+            runtime_id, runtime_receipt_path = _runtime_identity_from_artifacts(contract_path, receipt_path)
             kernels.append(
                 InstalledKernel(
                     name=child.name,
@@ -337,6 +381,8 @@ def list_installed_kernels(
                     launcher_contract_path=contract_path,
                     receipt_path=receipt_path,
                     launcher_path=_launcher_path_from_contract(contract_path),
+                    runtime_id=runtime_id,
+                    runtime_receipt_path=runtime_receipt_path,
                 )
             )
 
@@ -420,6 +466,7 @@ def verify_kernel(
 
     contract_path, receipt_path = _kernel_metadata_paths(data)
     contract: LauncherKernelContract | None = None
+    runtime_receipt_path: Path | None = None
     if contract_path is None:
         issues.append("launcher contract metadata missing from kernel.json")
     elif not contract_path.is_file():
@@ -440,10 +487,17 @@ def verify_kernel(
                 issues.append("launcher contract env does not match kernel.json")
             if contract.launcher_path != argv[0]:
                 issues.append("launcher contract launcher_path does not match kernel.json argv[0]")
+            runtime_receipt_path = Path(contract.runtime_receipt_path)
             if not contract.bootstrap_argv:
                 issues.append("launcher contract bootstrap_argv missing")
             elif ADD_OPENS_FLAG not in contract.bootstrap_argv:
                 issues.append(f"Required JVM flag missing from launcher bootstrap argv: {ADD_OPENS_FLAG}")
+            if not contract.runtime_id:
+                issues.append("launcher contract runtime_id missing")
+            if not contract.runtime_receipt_path:
+                issues.append("launcher contract runtime_receipt_path missing")
+            elif not runtime_receipt_path.is_file():
+                issues.append(f"runtime receipt not found: {runtime_receipt_path}")
 
     if receipt_path is None:
         issues.append("kernel receipt metadata missing from kernel.json")
@@ -461,7 +515,23 @@ def verify_kernel(
                 )
             if receipt.install_dir != str(kernel_dir):
                 issues.append("kernel receipt install_dir does not match kernel directory")
+            if contract is not None and receipt.runtime_id != contract.runtime_id:
+                issues.append("kernel receipt runtime_id does not match launcher contract")
+            if runtime_receipt_path is not None and receipt.runtime_receipt_path != str(runtime_receipt_path):
+                issues.append("kernel receipt runtime_receipt_path does not match launcher contract")
             if contract_path is not None and receipt.launcher_contract_path != str(contract_path):
                 issues.append("kernel receipt launcher_contract_path does not match kernel metadata")
+
+    if runtime_receipt_path is not None and runtime_receipt_path.is_file():
+        try:
+            runtime_receipt = read_json_record(runtime_receipt_path, RuntimeInstallReceipt)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            issues.append(f"runtime receipt invalid: {exc}")
+        else:
+            if contract is not None and runtime_receipt.runtime_id != contract.runtime_id:
+                issues.append("runtime receipt runtime_id does not match launcher contract")
+            expected_runtime_root = runtime_receipt_path.parent
+            if runtime_receipt.install_root != str(expected_runtime_root):
+                issues.append("runtime receipt install_root does not match runtime directory")
 
     return issues

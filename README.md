@@ -23,6 +23,7 @@ The Python lane already contains:
 - narrow execution and rendering helpers
 - Databricks integration helpers
 - runtime-home and manifest primitives for tool-owned managed assets
+- read-only runtime inventory commands via `agent-notebook runtimes list|doctor`
 
 ## Local Development
 

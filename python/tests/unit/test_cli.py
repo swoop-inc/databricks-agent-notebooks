@@ -112,6 +112,7 @@ def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, c
         name="scala212-dbr-connect",
         directory=tmp_path / "runtime" / "scala212-dbr-connect",
         source="runtime-home",
+        runtime_id="dbr-16.4-python-3.12",
         launcher_path="/usr/bin/python3",
         launcher_contract_path=tmp_path / "runtime" / "scala212-dbr-connect" / "launcher-contract.json",
         receipt_path=tmp_path / "state" / "installations" / "kernels" / "scala212-dbr-connect.json",
@@ -120,6 +121,7 @@ def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, c
         name="python3",
         directory=tmp_path / "custom" / "python3",
         source=str(tmp_path / "custom"),
+        runtime_id=None,
         launcher_path=None,
         launcher_contract_path=None,
         receipt_path=None,
@@ -136,11 +138,48 @@ def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, c
     captured = capsys.readouterr()
     assert "scala212-dbr-connect" in captured.out
     assert "runtime-home" in captured.out
+    assert "dbr-16.4-python-3.12" in captured.out
     assert "python3" in captured.out
     assert str(tmp_path / "custom") in captured.out
     assert "/usr/bin/python3" in captured.out
     assert str(runtime_kernel.launcher_contract_path) in captured.out
     assert "missing" in captured.out
+
+
+def test_runtimes_list_command_prints_materialized_runtimes(tmp_path: Path, capsys) -> None:
+    runtime = SimpleNamespace(
+        runtime_id="dbr-16.4-python-3.12",
+        status="materialized",
+        databricks_line="16.4",
+        python_line="3.12",
+        receipt_path=tmp_path / "runtime-home" / "data" / "runtimes" / "dbr-16.4-python-3.12" / "runtime-receipt.json",
+        install_root=tmp_path / "runtime-home" / "data" / "runtimes" / "dbr-16.4-python-3.12",
+    )
+
+    with patch("databricks_agent_notebooks.cli.list_installed_runtimes", return_value=[runtime]) as list_installed_runtimes:
+        result = main(["runtimes", "list"])
+
+    assert result == 0
+    list_installed_runtimes.assert_called_once_with()
+    captured = capsys.readouterr()
+    assert "dbr-16.4-python-3.12" in captured.out
+    assert "materialized" in captured.out
+
+
+def test_runtimes_doctor_command_prints_failures(capsys) -> None:
+    checks = [
+        SimpleNamespace(name="dbr-16.4-python-3.12", status="fail", message="install_root missing"),
+    ]
+
+    with patch("databricks_agent_notebooks.cli.doctor_installed_runtimes", return_value=checks) as doctor_installed_runtimes:
+        result = main(["runtimes", "doctor"])
+
+    assert result == 1
+    doctor_installed_runtimes.assert_called_once_with()
+    captured = capsys.readouterr()
+    assert "[FAIL] dbr-16.4-python-3.12" in captured.out
+    assert "install_root missing" in captured.out
+    assert "1 check(s) failed." in captured.err
 
 
 def test_kernels_remove_command_delegates(tmp_path: Path, capsys) -> None:

@@ -16,6 +16,7 @@ from pathlib import Path
 import nbformat
 from nbformat import NotebookNode
 
+from databricks_agent_notebooks._constants import DATABRICKS_CONNECT_VERSION
 from databricks_agent_notebooks.config.frontmatter import DatabricksConfig
 from databricks_agent_notebooks.execution.lineage import ExecutionLineage, capture_pre_execution
 
@@ -61,7 +62,7 @@ def _generate_scala_setup(config: DatabricksConfig, lineage: ExecutionLineage) -
     source_comment = f"// {' | '.join(parts)}"
 
     imports = (
-        'import $ivy.`com.databricks:databricks-connect:16.4.7`\n'
+        f'import $ivy.`com.databricks:databricks-connect:{DATABRICKS_CONNECT_VERSION}`\n'
         "import com.databricks.connect.DatabricksSession\n"
         "import com.databricks.sdk.core.DatabricksConfig"
     )

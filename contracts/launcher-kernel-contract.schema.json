@@ -7,7 +7,9 @@
     "contract_version",
     "kernel_id",
     "language",
-    "argv"
+    "argv",
+    "runtime_id",
+    "runtime_receipt_path"
   ],
   "properties": {
     "contract_version": { "type": "string" },
@@ -23,6 +25,7 @@
       "additionalProperties": { "type": "string" }
     },
     "runtime_id": { "type": "string" },
+    "runtime_receipt_path": { "type": "string" },
     "launcher_path": { "type": "string" },
     "bootstrap_argv": {
       "type": "array",

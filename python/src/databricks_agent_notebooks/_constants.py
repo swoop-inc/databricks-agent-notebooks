@@ -21,3 +21,6 @@ KERNELSPECS: dict[str, dict[str, str]] = {
         "language": "sql",
     },
 }
+
+DATABRICKS_CONNECT_VERSION = "16.4.7"
+DATABRICKS_CONNECT_LINE = "16.4"

@@ -26,6 +26,7 @@ def test_launcher_contract_schema_exists() -> None:
     assert "kernel_id" in data["required"]
     assert "language" in data["required"]
     assert "argv" in data["required"]
+    assert "runtime_id" in data["required"]
 
 
 def test_python_distribution_declares_nbconvert_dependency() -> None:

@@ -148,11 +148,14 @@ def test_check_kernel_semantics_supports_custom_kernel_id(tmp_path: Path) -> Non
 
     home = _make_runtime_home(tmp_path / "runtime-home")
     kernel_id = "custom-scala"
+    runtime_id = "dbr-16.4-python-3.12"
     kernel_dir = home.kernels_dir / kernel_id
     kernel_dir.mkdir(parents=True)
     contract_path = kernel_dir / "launcher-contract.json"
     receipt_path = home.installations_dir / "kernels" / f"{kernel_id}.json"
+    runtime_receipt_path = home.runtimes_dir / runtime_id / "runtime-receipt.json"
     receipt_path.parent.mkdir(parents=True)
+    runtime_receipt_path.parent.mkdir(parents=True)
     (kernel_dir / "kernel.json").write_text(
         json.dumps(
             {
@@ -195,7 +198,8 @@ def test_check_kernel_semantics_supports_custom_kernel_id(tmp_path: Path) -> Non
                     "{connection_file}",
                 ],
                 "env": {},
-                "runtime_id": kernel_id,
+                "runtime_id": runtime_id,
+                "runtime_receipt_path": str(runtime_receipt_path),
                 "launcher_path": sys.executable,
                 "bootstrap_argv": [
                     "/usr/bin/java",
@@ -216,8 +220,25 @@ def test_check_kernel_semantics_supports_custom_kernel_id(tmp_path: Path) -> Non
                 "display_name": "Custom Scala",
                 "language": "scala",
                 "install_dir": str(kernel_dir),
+                "runtime_id": runtime_id,
+                "runtime_receipt_path": str(runtime_receipt_path),
                 "launcher_contract_path": str(contract_path),
                 "installed_at": "2026-03-22T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_receipt_path.write_text(
+        json.dumps(
+            {
+                "receipt_version": "1",
+                "runtime_id": runtime_id,
+                "runtime_kind": "databricks-connect",
+                "databricks_line": "16.4",
+                "python_line": "3.12",
+                "install_root": str(home.runtimes_dir / runtime_id),
+                "installed_at": "2026-03-22T00:00:00+00:00",
+                "status": "materialized",
             }
         ),
         encoding="utf-8",
