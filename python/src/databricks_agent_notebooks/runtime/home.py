@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -28,7 +29,7 @@ class RuntimeHome:
 
 def resolve_runtime_home(env: Mapping[str, str] | None = None) -> RuntimeHome:
     """Resolve the managed runtime home using env override or platformdirs."""
-    env_map = dict(env or {})
+    env_map = dict(os.environ if env is None else env)
     override = env_map.get(HOME_ENV_VAR)
     if override:
         root = Path(override)

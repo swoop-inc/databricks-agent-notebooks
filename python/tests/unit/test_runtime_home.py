@@ -6,12 +6,25 @@ from unittest.mock import patch
 from databricks_agent_notebooks.runtime.home import HOME_ENV_VAR, ensure_runtime_home, resolve_runtime_home
 
 
-def test_env_override_sets_runtime_home(tmp_path: Path) -> None:
+def test_env_override_sets_runtime_home(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(HOME_ENV_VAR, str(tmp_path / "process-home"))
+
     home = resolve_runtime_home(env={HOME_ENV_VAR: str(tmp_path / "custom-home")})
 
     assert home.root == tmp_path / "custom-home"
     assert home.runtimes_dir == tmp_path / "custom-home" / "data" / "runtimes"
     assert home.kernels_dir == tmp_path / "custom-home" / "data" / "kernels"
+
+
+def test_process_env_override_sets_runtime_home(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(HOME_ENV_VAR, str(tmp_path / "process-home"))
+
+    with patch("databricks_agent_notebooks.runtime.home.PlatformDirs") as mock_platform_dirs:
+        mock_platform_dirs.return_value.user_data_path = "/tmp/dan-home"
+        home = resolve_runtime_home()
+
+    assert home.root == tmp_path / "process-home"
+    assert home.cache_dir == tmp_path / "process-home" / "cache"
 
 
 def test_default_runtime_home_uses_platformdirs() -> None:
