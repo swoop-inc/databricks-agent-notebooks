@@ -1,0 +1,48 @@
+name: python-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package and test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+      - name: Run unit tests
+        run: pytest tests/unit
+  artifact-smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build distribution artifacts
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+      - name: Install built wheel into clean venv
+        run: |
+          python -m venv .artifact-venv
+          .artifact-venv/bin/python -m pip install --upgrade pip
+          .artifact-venv/bin/pip install dist/*.whl
+      - name: Smoke test installed artifact
+        run: |
+          .artifact-venv/bin/python -m databricks_agent_notebooks help
+          .artifact-venv/bin/agent-notebook help
+          .artifact-venv/bin/python -m jupyter nbconvert --help

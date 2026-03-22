@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "databricks-agent-notebooks"
+version = "0.1.0"
+description = "Standalone notebook conversion and execution tooling for Databricks."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "jupytext>=1.16",
+  "nbconvert>=7.16",
+  "nbformat>=5.10",
+  "platformdirs>=4.3",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+agent-notebook = "databricks_agent_notebooks.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["databricks_agent_notebooks*"]

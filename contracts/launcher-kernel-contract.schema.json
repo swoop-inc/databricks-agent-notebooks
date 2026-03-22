@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LauncherKernelContract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "kernel_id",
+    "language",
+    "argv"
+  ],
+  "properties": {
+    "contract_version": { "type": "string" },
+    "kernel_id": { "type": "string" },
+    "display_name": { "type": "string" },
+    "language": { "type": "string" },
+    "argv": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "runtime_id": { "type": "string" },
+    "launcher_path": { "type": "string" }
+  }
+}
