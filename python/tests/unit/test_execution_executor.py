@@ -15,7 +15,7 @@ from databricks_agent_notebooks.execution.executor import (
     ensure_execution_kernel,
     execute_notebook,
 )
-from databricks_agent_notebooks.runtime.home import HOME_ENV_VAR
+from databricks_agent_notebooks.runtime.home import HOME_ENV_VAR, resolve_runtime_home
 
 
 @pytest.fixture()
@@ -32,7 +32,7 @@ def test_kernel_and_timeout_are_passed_to_nbconvert(mock_run, ensure_kernel, not
 
     execute_notebook(notebook_path, kernel="my-kernel", timeout=300)
 
-    ensure_kernel.assert_called_once_with("my-kernel")
+    ensure_kernel.assert_called_once_with("my-kernel", extra_kernel_dirs=[str(resolve_runtime_home().kernels_dir)])
     cmd = mock_run.call_args[0][0]
     assert cmd[:3] == [os.sys.executable, "-m", "jupyter"]
     assert "--ExecutePreprocessor.kernel_name=my-kernel" in cmd
@@ -66,6 +66,21 @@ def test_runtime_home_kernel_path_is_added_to_jupyter_search_path(mock_run, _ens
 
 @patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
 @patch("databricks_agent_notebooks.execution.executor.subprocess.run")
+def test_runtime_home_kernels_dir_is_passed_to_preflight(mock_run, ensure_kernel, notebook_path: Path, tmp_path: Path) -> None:
+    mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    runtime_home = tmp_path / "runtime-home"
+
+    with patch.dict(os.environ, {HOME_ENV_VAR: str(runtime_home)}, clear=False):
+        execute_notebook(notebook_path, kernel="scala212-dbr-connect")
+
+    ensure_kernel.assert_called_once_with(
+        "scala212-dbr-connect",
+        extra_kernel_dirs=[str(runtime_home / "data" / "kernels")],
+    )
+
+
+@patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
+@patch("databricks_agent_notebooks.execution.executor.subprocess.run")
 def test_successful_run_returns_execution_result(mock_run, _ensure_kernel, notebook_path: Path) -> None:
     mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
@@ -74,6 +89,17 @@ def test_successful_run_returns_execution_result(mock_run, _ensure_kernel, noteb
     assert isinstance(result, ExecutionResult)
     assert result.success is True
     assert result.error is None
+
+
+@patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
+def test_missing_kernel_returns_execution_result_without_traceback(ensure_kernel, notebook_path: Path) -> None:
+    ensure_kernel.side_effect = RuntimeError("missing kernel")
+
+    result = execute_notebook(notebook_path, kernel="scala212-dbr-connect")
+
+    assert isinstance(result, ExecutionResult)
+    assert result.success is False
+    assert result.error == "missing kernel"
 
 
 def test_ensure_execution_kernel_bootstraps_python3_when_missing() -> None:

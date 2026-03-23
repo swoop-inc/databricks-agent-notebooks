@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,9 +43,18 @@ def _missing_kernel_error(kernel: str) -> RuntimeError:
     )
 
 
-def ensure_execution_kernel(kernel: str) -> None:
+def ensure_execution_kernel(
+    kernel: str,
+    *,
+    extra_kernel_dirs: Sequence[str] | None = None,
+) -> None:
     """Ensure the requested Jupyter kernel exists before running nbconvert."""
     manager = KernelSpecManager()
+    if extra_kernel_dirs:
+        manager.kernel_dirs = [
+            *list(extra_kernel_dirs),
+            *[path for path in manager.kernel_dirs if path not in extra_kernel_dirs],
+        ]
     try:
         manager.get_kernel_spec(kernel)
         return
@@ -106,8 +116,6 @@ def execute_notebook(
     if output_path is None:
         output_path = notebook_path.with_suffix(".executed.ipynb")
 
-    ensure_execution_kernel(kernel)
-
     cmd = [
         os.sys.executable,
         "-m",
@@ -130,7 +138,8 @@ def execute_notebook(
     # not pick up a local Spark installation.
     env = os.environ.copy()
     env.pop("SPARK_HOME", None)
-    runtime_data_dir = str(resolve_runtime_home(env).kernels_dir.parent)
+    runtime_home = resolve_runtime_home(env)
+    runtime_data_dir = str(runtime_home.kernels_dir.parent)
     existing_jupyter_path = env.get("JUPYTER_PATH")
     if existing_jupyter_path:
         search_paths = existing_jupyter_path.split(os.pathsep)
@@ -140,6 +149,16 @@ def execute_notebook(
         env["JUPYTER_PATH"] = runtime_data_dir
 
     start = time.monotonic()
+    try:
+        ensure_execution_kernel(kernel, extra_kernel_dirs=[str(runtime_home.kernels_dir)])
+    except RuntimeError as exc:
+        return ExecutionResult(
+            success=False,
+            output_path=output_path,
+            duration_seconds=time.monotonic() - start,
+            error=str(exc),
+        )
+
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)  # noqa: S603
     duration = time.monotonic() - start
 
