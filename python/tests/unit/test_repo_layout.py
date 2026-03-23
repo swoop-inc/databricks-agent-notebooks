@@ -5,6 +5,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -16,6 +18,10 @@ def read_text(path: Path) -> str:
 def load_pyproject() -> dict[str, object]:
     pyproject_path = REPO_ROOT / "python" / "pyproject.toml"
     return tomllib.loads(read_text(pyproject_path))
+
+
+def load_workflow(path: Path) -> dict[str, object]:
+    return yaml.load(read_text(path), Loader=yaml.BaseLoader)
 
 
 def _tracked_files(*paths: str) -> list[Path]:
@@ -112,22 +118,71 @@ def test_python_ci_validates_built_artifacts() -> None:
 
 
 def test_publish_workflow_uses_trusted_publishing_scaffolding() -> None:
-    workflow = read_text(REPO_ROOT / ".github" / "workflows" / "publish.yml")
+    workflow = load_workflow(REPO_ROOT / ".github" / "workflows" / "publish.yml")
 
-    assert "workflow_dispatch:" in workflow
-    assert "push:" in workflow
-    assert "tags:" in workflow
-    assert '      - "v*"' in workflow
-    assert "upload-artifact@v4" in workflow
-    assert "download-artifact@v4" in workflow
-    assert "environment: testpypi" in workflow
-    assert "environment: pypi" in workflow
-    assert "id-token: write" in workflow
-    assert "repository-url: https://test.pypi.org/legacy/" in workflow
-    assert "if: github.event_name == 'workflow_dispatch'" in workflow
-    assert "if: startsWith(github.ref, 'refs/tags/')" in workflow
-    assert "python -m build" in workflow
-    assert "dist-artifacts" in workflow
+    assert workflow["on"] == {
+        "workflow_dispatch": "",
+        "push": {"tags": ["v*"]},
+    }
+
+    jobs = workflow["jobs"]
+    build_job = jobs["build"]
+    testpypi_job = jobs["publish-testpypi"]
+    pypi_job = jobs["publish-pypi"]
+
+    build_steps = build_job["steps"]
+    assert build_steps[0]["uses"] == (
+        "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"
+    )
+    assert build_steps[1]["uses"] == (
+        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
+    )
+    assert build_steps[1]["with"] == {"python-version": "3.12"}
+    assert build_steps[-1]["uses"] == (
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    )
+    assert build_steps[-1]["with"] == {
+        "name": "dist-artifacts",
+        "path": "python/dist/*",
+    }
+
+    tag_version_step = next(
+        step
+        for step in build_steps
+        if step.get("name") == "Verify tag matches package version"
+    )
+    assert tag_version_step["if"] == (
+        "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+    )
+    assert "github.ref_name" in tag_version_step["run"]
+    assert "pyproject.toml" in tag_version_step["run"]
+    assert "project" in tag_version_step["run"]
+    assert "version" in tag_version_step["run"]
+
+    assert testpypi_job["if"] == "github.event_name == 'workflow_dispatch'"
+    assert testpypi_job["permissions"] == {"id-token": "write"}
+    assert testpypi_job["environment"] == "testpypi"
+    assert testpypi_job["steps"][0]["uses"] == (
+        "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+    )
+    assert testpypi_job["steps"][1]["uses"] == (
+        "pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e"
+    )
+    assert testpypi_job["steps"][1]["with"] == {
+        "repository-url": "https://test.pypi.org/legacy/"
+    }
+
+    assert pypi_job["if"] == (
+        "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+    )
+    assert pypi_job["permissions"] == {"id-token": "write"}
+    assert pypi_job["environment"] == "pypi"
+    assert pypi_job["steps"][0]["uses"] == (
+        "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+    )
+    assert pypi_job["steps"][1]["uses"] == (
+        "pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e"
+    )
 
 
 def test_release_docs_only_claim_verified_local_offline_scope() -> None:

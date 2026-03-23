@@ -28,7 +28,7 @@ The standalone repository should only make release claims that are verified by t
 The publication scaffold lives in `.github/workflows/publish.yml`.
 
 - manual `workflow_dispatch` runs are reserved for TestPyPI-style publishing only
-- `push` handling is tag-only (`v*`), so ordinary branch pushes do not publish
+- `push` handling is tag-only (`v*`), so ordinary branch pushes do not publish, PyPI only runs on tag-push events, and the pushed tag must match `v<project.version>` from `python/pyproject.toml`
 - the workflow builds distributions once, uploads them as `dist-artifacts`, and only then hands them to the publish jobs
 - the publish jobs use the GitHub environments `testpypi` and `pypi`
 - each publish job requests `permissions: id-token: write` for Trusted Publishing
