@@ -184,8 +184,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return 1
     else:
         print(
-            "No cluster specified — using serverless compute "
-            "(Beta for Scala, some limitations apply).",
+            "No cluster specified — using serverless compute.",
             file=sys.stderr,
         )
 

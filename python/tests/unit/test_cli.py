@@ -55,6 +55,40 @@ def test_run_pipeline_delegates(tmp_path: Path, capsys) -> None:
     assert "Execution succeeded" in capsys.readouterr().out
 
 
+def test_run_without_cluster_announces_serverless(tmp_path: Path, capsys) -> None:
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(_make_notebook_mock(), DatabricksConfig(profile="prod")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="prod"),
+        ),
+        patch(
+            "databricks_agent_notebooks.cli.inject_cells",
+            return_value=_make_notebook_mock(),
+        ),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=input_file, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.default_service"),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        result = main(["run", str(input_file)])
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "No cluster specified — using serverless compute." in captured.err
+    assert "Beta for Scala" not in captured.err
+
+
 def test_install_kernel_command_delegates(tmp_path: Path, capsys) -> None:
     kernel_dir = tmp_path / "kernels" / "scala212-dbr-connect"
 
