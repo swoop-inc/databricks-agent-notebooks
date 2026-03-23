@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
+import nbformat
 import pytest
 from jupyter_client.kernelspec import NoSuchKernel
 
@@ -26,48 +28,64 @@ def notebook_path(tmp_path: Path) -> Path:
 
 
 @patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
-@patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_kernel_and_timeout_are_passed_to_nbconvert(mock_run, ensure_kernel, notebook_path: Path) -> None:
-    mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+@patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor")
+def test_kernel_and_timeout_are_passed_to_execute_preprocessor(mock_execute_preprocessor, ensure_kernel, notebook_path: Path) -> None:
+    notebook = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("print(1)")])
+    nbformat.write(notebook, notebook_path)
+    mock_execute_preprocessor.return_value.preprocess.return_value = (notebook, {})
 
     execute_notebook(notebook_path, kernel="my-kernel", timeout=300)
 
     ensure_kernel.assert_called_once_with("my-kernel", extra_kernel_dirs=[str(resolve_runtime_home().kernels_dir)])
-    cmd = mock_run.call_args[0][0]
-    assert cmd[:3] == [os.sys.executable, "-m", "jupyter"]
-    assert "--ExecutePreprocessor.kernel_name=my-kernel" in cmd
-    assert "--ExecutePreprocessor.timeout=300" in cmd
+    mock_execute_preprocessor.assert_called_once_with(
+        kernel_name="my-kernel",
+        timeout=300,
+        allow_errors=False,
+        on_cell_execute=ANY,
+        on_cell_complete=ANY,
+        on_cell_executed=ANY,
+    )
 
 
 @patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
-@patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_spark_home_is_removed_from_env(mock_run, _ensure_kernel, notebook_path: Path) -> None:
-    mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+@patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor")
+def test_spark_home_is_removed_from_env(mock_execute_preprocessor, _ensure_kernel, notebook_path: Path) -> None:
+    notebook = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("print(1)")])
+    nbformat.write(notebook, notebook_path)
+
+    def _preprocess(nb, resources):
+        assert "SPARK_HOME" not in os.environ
+        return nb, resources
+
+    mock_execute_preprocessor.return_value.preprocess.side_effect = _preprocess
 
     with patch.dict(os.environ, {"SPARK_HOME": "/some/spark"}, clear=False):
         execute_notebook(notebook_path, kernel="python3")
 
-    env = mock_run.call_args[1]["env"]
-    assert "SPARK_HOME" not in env
-
 
 @patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
-@patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_runtime_home_kernel_path_is_added_to_jupyter_search_path(mock_run, _ensure_kernel, notebook_path: Path, tmp_path: Path) -> None:
-    mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+@patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor")
+def test_runtime_home_kernel_path_is_added_to_jupyter_search_path(mock_execute_preprocessor, _ensure_kernel, notebook_path: Path, tmp_path: Path) -> None:
+    notebook = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("print(1)")])
+    nbformat.write(notebook, notebook_path)
     runtime_home = tmp_path / "runtime-home"
+
+    def _preprocess(nb, resources):
+        assert os.environ["JUPYTER_PATH"] == str(runtime_home / "data")
+        return nb, resources
+
+    mock_execute_preprocessor.return_value.preprocess.side_effect = _preprocess
 
     with patch.dict(os.environ, {HOME_ENV_VAR: str(runtime_home)}, clear=False):
         execute_notebook(notebook_path, kernel="scala212-dbr-connect")
 
-    env = mock_run.call_args[1]["env"]
-    assert env["JUPYTER_PATH"] == str(runtime_home / "data")
-
 
 @patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
-@patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_runtime_home_kernels_dir_is_passed_to_preflight(mock_run, ensure_kernel, notebook_path: Path, tmp_path: Path) -> None:
-    mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+@patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor")
+def test_runtime_home_kernels_dir_is_passed_to_preflight(mock_execute_preprocessor, ensure_kernel, notebook_path: Path, tmp_path: Path) -> None:
+    notebook = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("print(1)")])
+    nbformat.write(notebook, notebook_path)
+    mock_execute_preprocessor.return_value.preprocess.return_value = (notebook, {})
     runtime_home = tmp_path / "runtime-home"
 
     with patch.dict(os.environ, {HOME_ENV_VAR: str(runtime_home)}, clear=False):
@@ -80,9 +98,11 @@ def test_runtime_home_kernels_dir_is_passed_to_preflight(mock_run, ensure_kernel
 
 
 @patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
-@patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_successful_run_returns_execution_result(mock_run, _ensure_kernel, notebook_path: Path) -> None:
-    mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+@patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor")
+def test_successful_run_returns_execution_result(mock_execute_preprocessor, _ensure_kernel, notebook_path: Path) -> None:
+    notebook = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("print(1)")])
+    nbformat.write(notebook, notebook_path)
+    mock_execute_preprocessor.return_value.preprocess.return_value = (notebook, {})
 
     result = execute_notebook(notebook_path, kernel="python3")
 
@@ -125,3 +145,158 @@ def test_ensure_execution_kernel_raises_for_missing_non_python_kernel() -> None:
     with patch("databricks_agent_notebooks.execution.executor.KernelSpecManager", return_value=manager):
         with pytest.raises(RuntimeError, match="my-kernel"):
             ensure_execution_kernel("my-kernel")
+
+
+def test_execute_notebook_emits_cell_progress_with_normalized_truncated_snippet(
+    notebook_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notebook = nbformat.v4.new_notebook(
+        cells=[
+            nbformat.v4.new_code_cell(
+                "\n".join(
+                    [
+                        "# [AGENT-NOTEBOOK:INJECTED] - auto-generated, do not edit",
+                        "# Source: /tmp/input.md",
+                        "from databricks.connect import DatabricksSession",
+                        "spark = DatabricksSession.builder.serverless().getOrCreate()",
+                    ]
+                )
+            )
+        ]
+    )
+    notebook.cells[0].metadata["agent_notebook_injected"] = True
+    nbformat.write(notebook, notebook_path)
+
+    class FakeExecutePreprocessor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def preprocess(self, nb, resources):
+            self.kwargs["on_cell_execute"](cell=nb.cells[0], cell_index=0)
+            time.sleep(0.03)
+            self.kwargs["on_cell_complete"](cell=nb.cells[0], cell_index=0)
+            self.kwargs["on_cell_executed"](cell=nb.cells[0], cell_index=0, execute_reply={})
+            return nb, resources
+
+    with (
+        patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel"),
+        patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor", FakeExecutePreprocessor),
+        patch("databricks_agent_notebooks.execution.executor.HEARTBEAT_INTERVAL_SECONDS", 0.01),
+    ):
+        result = execute_notebook(notebook_path, kernel="python3")
+
+    assert result.success is True
+    progress_lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith("agent-notebook:")]
+    assert progress_lines[0].startswith("agent-notebook: phase=cell-start cell_index=1")
+    assert 'cell_label="[AGENT-NOTEBOOK:INJECTED] Databricks session setup"' in progress_lines[0]
+    assert (
+        'cell_snippet="from databricks.connect import DatabricksSession '
+        'spark = DatabricksSession.builder.serverless().getOrCreate()"' in progress_lines[0]
+    )
+    assert any("phase=executing" in line and "heartbeat=1" in line and "cell_index=1" in line for line in progress_lines[1:])
+
+
+def test_execute_notebook_stops_heartbeats_after_on_cell_executed(
+    notebook_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notebook = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("value = 1")])
+    nbformat.write(notebook, notebook_path)
+
+    class FakeExecutePreprocessor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def preprocess(self, nb, resources):
+            self.kwargs["on_cell_execute"](cell=nb.cells[0], cell_index=0)
+            time.sleep(0.02)
+            self.kwargs["on_cell_complete"](cell=nb.cells[0], cell_index=0)
+            time.sleep(0.03)
+            self.kwargs["on_cell_executed"](cell=nb.cells[0], cell_index=0, execute_reply={})
+            return nb, resources
+
+    with (
+        patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel"),
+        patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor", FakeExecutePreprocessor),
+        patch("databricks_agent_notebooks.execution.executor.HEARTBEAT_INTERVAL_SECONDS", 0.01),
+    ):
+        result = execute_notebook(notebook_path, kernel="python3")
+
+    assert result.success is True
+    progress_lines = [line for line in capsys.readouterr().err.splitlines() if "phase=executing" in line]
+    assert len(progress_lines) >= 1
+    time.sleep(0.03)
+    assert capsys.readouterr().err == ""
+
+
+def test_execute_notebook_keeps_heartbeats_running_until_on_cell_executed(
+    notebook_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notebook = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("value = 1")])
+    nbformat.write(notebook, notebook_path)
+
+    class FakeExecutePreprocessor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def preprocess(self, nb, resources):
+            self.kwargs["on_cell_execute"](cell=nb.cells[0], cell_index=0)
+            time.sleep(0.015)
+            self.kwargs["on_cell_complete"](cell=nb.cells[0], cell_index=0)
+            time.sleep(0.035)
+            self.kwargs["on_cell_executed"](cell=nb.cells[0], cell_index=0, execute_reply={})
+            return nb, resources
+
+    with (
+        patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel"),
+        patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor", FakeExecutePreprocessor),
+        patch("databricks_agent_notebooks.execution.executor.HEARTBEAT_INTERVAL_SECONDS", 0.01),
+    ):
+        result = execute_notebook(notebook_path, kernel="python3")
+
+    assert result.success is True
+    progress_lines = [line for line in capsys.readouterr().err.splitlines() if "phase=executing" in line]
+    assert len(progress_lines) >= 3
+    assert all("cell_index=1" in line for line in progress_lines)
+
+
+def test_execute_notebook_truncates_long_cell_snippets(
+    notebook_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notebook = nbformat.v4.new_notebook(
+        cells=[
+            nbformat.v4.new_code_cell(
+                "result = spark.sql(\"select * from very_large_table where partition = '2026-03-23' "
+                "and region = 'us-east-1' and env = 'prod' order by event_time desc limit 200\")\n"
+                "display(result)\n"
+                "result.count()"
+            )
+        ]
+    )
+    nbformat.write(notebook, notebook_path)
+
+    class FakeExecutePreprocessor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def preprocess(self, nb, resources):
+            self.kwargs["on_cell_execute"](cell=nb.cells[0], cell_index=0)
+            self.kwargs["on_cell_complete"](cell=nb.cells[0], cell_index=0)
+            self.kwargs["on_cell_executed"](cell=nb.cells[0], cell_index=0, execute_reply={})
+            return nb, resources
+
+    with (
+        patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel"),
+        patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor", FakeExecutePreprocessor),
+    ):
+        result = execute_notebook(notebook_path, kernel="python3")
+
+    assert result.success is True
+    progress_lines = [line for line in capsys.readouterr().err.splitlines() if "phase=cell-start" in line]
+    assert len(progress_lines) == 1
+    assert 'cell_snippet="' in progress_lines[0]
+    assert '..."' in progress_lines[0]
+    assert "result.count()" not in progress_lines[0]

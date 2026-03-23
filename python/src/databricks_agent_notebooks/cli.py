@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 from databricks_agent_notebooks.config.frontmatter import DatabricksConfig, merge_config
-from databricks_agent_notebooks.execution.executor import execute_notebook
+from databricks_agent_notebooks.execution.executor import RawProgressValue, emit_progress_signal, execute_notebook
 from databricks_agent_notebooks.execution.injection import inject_cells
 from databricks_agent_notebooks.execution.rendering import render
 from databricks_agent_notebooks.formats.conversion import to_notebook, validate_single_language
@@ -52,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--profile", default=None, help="Databricks CLI profile")
     run.add_argument("--format", default="all", choices=["all", "md", "html"], dest="fmt", help="Output format (default: all)")
     run.add_argument("--output-dir", default=None, help="Output directory (default: input file's parent)")
-    run.add_argument("--timeout", type=int, default=600, help="Per-cell timeout in seconds (default: 600)")
+    run.add_argument("--timeout", type=int, default=None, help="Per-cell timeout in seconds (default: unset)")
     run.add_argument("--allow-errors", action="store_true", help="Continue execution on cell errors")
     run.add_argument("--no-inject-session", action="store_true", help="Skip Databricks Connect session injection")
     run.add_argument("--language", default=None, help="Override notebook language (python, scala)")
@@ -153,11 +153,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     # Step 1: Normalize to notebook
     notebook, frontmatter_config = to_notebook(input_path)
+    stem = input_path.stem
+    emit_progress_signal("prepare", input_path=str(input_path), notebook_stem=stem)
 
     # Step 1b: Validate single language (fail fast on mixed-language notebooks)
     try:
         validate_single_language(notebook)
     except ValueError as exc:
+        emit_progress_signal("failed", error=str(exc))
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -179,21 +182,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 cluster=cluster.cluster_id,
                 language=config.language,
             )
+            emit_progress_signal("compute", mode=RawProgressValue("cluster"), cluster_id=cluster.cluster_id)
         except ClusterError as exc:
+            emit_progress_signal("failed", error=str(exc))
             print(f"error: {exc}", file=sys.stderr)
             return 1
     else:
-        print(
-            "No cluster specified — using serverless compute.",
-            file=sys.stderr,
-        )
+        emit_progress_signal("compute", mode=RawProgressValue("serverless"))
 
     # Step 4: Inject session setup
     if not args.no_inject_session:
         notebook = inject_cells(notebook, config, input_path)
 
     # Step 5: Set up output directory
-    stem = input_path.stem
     output_dir = Path(args.output_dir).resolve() if args.output_dir else input_path.parent
     run_output_dir = output_dir / f"{stem}_output"
     run_output_dir.mkdir(parents=True, exist_ok=True)
@@ -212,6 +213,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     # Step 8: Execute — use the kernel from the notebook's own metadata
     kernel_name = notebook.metadata.get("kernelspec", {}).get("name", "scala212-dbr-connect")
+    emit_progress_signal("execute-start", kernel=kernel_name, timeout=args.timeout)
     result = execute_notebook(
         temp_notebook,
         kernel=kernel_name,
@@ -229,6 +231,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     # Step 10: Render
     if executed_path.is_file():
+        emit_progress_signal("render", output_dir=str(run_output_dir))
         render_paths = render(executed_path, run_output_dir, args.fmt)
     else:
         render_paths = {}
@@ -245,8 +248,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     # Step 12: Print summary
     if result.success:
+        emit_progress_signal("done", success=True, duration_s=round(result.duration_seconds, 1))
         print(f"Execution succeeded ({result.duration_seconds:.1f}s)")
     else:
+        emit_progress_signal("failed", duration_s=round(result.duration_seconds, 1), error=result.error or "Unknown error")
         print(f"Execution failed ({result.duration_seconds:.1f}s): {result.error}", file=sys.stderr)
 
     print(f"Output directory: {run_output_dir}")

@@ -1,22 +1,26 @@
-"""Notebook execution via Jupyter nbconvert subprocess.
+"""Notebook execution via Jupyter nbconvert with compact progress signals.
 
-Wraps the ``jupyter nbconvert --execute`` workflow, handling kernel
-selection, timeout, environment sanitization (SPARK_HOME removal), and
-timing.  Returns a structured :class:`ExecutionResult` rather than
-raising on failure so callers can inspect both success and error paths.
+Runs notebook execution through the in-process nbconvert/nbclient stack so
+current-cell transitions and coarse heartbeats can be surfaced on stderr
+without changing the output notebook or final success/failure contract.
 """
 
 from __future__ import annotations
 
+import json
 import os
-import subprocess
 import sys
+import threading
 import time
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from jupyter_client.kernelspec import KernelSpecManager, NoSuchKernel
+from nbconvert.preprocessors import ExecutePreprocessor
+
+import nbformat
 
 from databricks_agent_notebooks.runtime.home import resolve_runtime_home
 
@@ -24,6 +28,15 @@ try:
     from ipykernel.kernelspec import install as install_ipykernel
 except ModuleNotFoundError:  # pragma: no cover - exercised via packaging verification
     install_ipykernel = None
+
+
+HEARTBEAT_INTERVAL_SECONDS = 30.0
+CELL_LABEL_MAX_CHARS = 80
+CELL_SNIPPET_MAX_CHARS = 140
+
+
+class RawProgressValue(str):
+    """Mark a string as safe to emit without JSON quoting."""
 
 
 @dataclass(frozen=True)
@@ -34,6 +47,29 @@ class ExecutionResult:
     output_path: Path | None
     duration_seconds: float
     error: str | None = None
+
+
+def _format_progress_value(value: object) -> str:
+    if isinstance(value, RawProgressValue):
+        return str(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "none"
+    if isinstance(value, int | float):
+        return str(value)
+    return json.dumps(str(value))
+
+
+def format_progress_signal(phase: str, **fields: object) -> str:
+    parts = [f"phase={phase}"]
+    parts.extend(f"{key}={_format_progress_value(value)}" for key, value in fields.items())
+    return f"agent-notebook: {' '.join(parts)}"
+
+
+def emit_progress_signal(phase: str, *, stream = None, **fields: object) -> None:
+    target = stream or sys.stderr
+    print(format_progress_signal(phase, **fields), file=target, flush=True)
 
 
 def _missing_kernel_error(kernel: str) -> RuntimeError:
@@ -82,15 +118,164 @@ def ensure_execution_kernel(
         ) from exc
 
 
+def _normalize_whitespace(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _truncate(value: str, *, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[: limit - 3]}..."
+
+
+def _strip_comment_prefix(line: str) -> str:
+    for prefix in ("#", "//", "--"):
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return line
+
+
+def _iter_meaningful_lines(source: str) -> list[str]:
+    return [line.strip() for line in source.splitlines() if line.strip()]
+
+
+def _build_cell_label(cell: nbformat.NotebookNode, lines: list[str]) -> str:
+    if cell.metadata.get("agent_notebook_injected", False):
+        return "[AGENT-NOTEBOOK:INJECTED] Databricks session setup"
+    if not lines:
+        return "[empty cell]"
+    return _truncate(_normalize_whitespace(_strip_comment_prefix(lines[0])), limit=CELL_LABEL_MAX_CHARS)
+
+
+def _build_cell_snippet(cell: nbformat.NotebookNode, lines: list[str]) -> str:
+    snippet_lines = lines
+    if cell.metadata.get("agent_notebook_injected", False):
+        snippet_lines = [
+            line for line in lines
+            if not line.startswith(("# [AGENT-NOTEBOOK:INJECTED]", "// [AGENT-NOTEBOOK:INJECTED]", "# Source:", "// Source:"))
+        ]
+    else:
+        code_only_lines = [line for line in lines if not line.startswith(("#", "//", "--"))]
+        if code_only_lines:
+            snippet_lines = code_only_lines
+    if not snippet_lines:
+        return "[empty cell]"
+    return _truncate(_normalize_whitespace(" ".join(snippet_lines)), limit=CELL_SNIPPET_MAX_CHARS)
+
+
+def _describe_cell(cell: nbformat.NotebookNode, *, cell_index: int) -> dict[str, object]:
+    lines = _iter_meaningful_lines(cell.source)
+    return {
+        "cell_index": cell_index + 1,
+        "cell_label": _build_cell_label(cell, lines),
+        "cell_snippet": _build_cell_snippet(cell, lines),
+    }
+
+
+class _ExecutionProgressReporter:
+    def __init__(
+        self,
+        *,
+        stream = None,
+        heartbeat_interval: float | None = None,
+        clock = time.monotonic,
+    ) -> None:
+        self._stream = stream
+        self._heartbeat_interval = heartbeat_interval or HEARTBEAT_INTERVAL_SECONDS
+        self._clock = clock
+        self._started_at = clock()
+        self._lock = threading.Lock()
+        self._current_cell: dict[str, object] | None = None
+        self._heartbeat_count = 0
+        self._cell_done = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
+
+    def _heartbeat_loop(self, cell_done: threading.Event) -> None:
+        while not cell_done.wait(self._heartbeat_interval):
+            with self._lock:
+                if cell_done is not self._cell_done or self._current_cell is None:
+                    return
+                self._heartbeat_count += 1
+                heartbeat_fields = {
+                    "elapsed_s": int(self._clock() - self._started_at),
+                    "heartbeat": self._heartbeat_count,
+                    **self._current_cell,
+                }
+            emit_progress_signal("executing", stream=self._stream, **heartbeat_fields)
+
+    def _stop_heartbeat(self) -> None:
+        with self._lock:
+            cell_done = self._cell_done
+            heartbeat_thread = self._heartbeat_thread
+            self._current_cell = None
+            self._heartbeat_thread = None
+            self._cell_done = threading.Event()
+        cell_done.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join()
+
+    def on_cell_execute(self, *, cell: nbformat.NotebookNode, cell_index: int, **_: object) -> None:
+        self._stop_heartbeat()
+        cell_progress = _describe_cell(cell, cell_index=cell_index)
+        emit_progress_signal("cell-start", stream=self._stream, **cell_progress)
+        heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            args=(self._cell_done,),
+            daemon=True,
+        )
+        with self._lock:
+            self._current_cell = cell_progress
+            self._heartbeat_count = 0
+            self._heartbeat_thread = heartbeat_thread
+        heartbeat_thread.start()
+
+    def on_cell_complete(self, **_: object) -> None:
+        # nbclient fires this immediately after sending the execute request, not
+        # after the cell has finished running.
+        return
+
+    def on_cell_executed(self, **_: object) -> None:
+        self._stop_heartbeat()
+
+    def close(self) -> None:
+        self._stop_heartbeat()
+
+
+@contextmanager
+def _patched_execution_environment(runtime_data_dir: str):
+    original_spark_home = os.environ.pop("SPARK_HOME", None)
+    original_jupyter_path = os.environ.get("JUPYTER_PATH")
+
+    if original_jupyter_path:
+        search_paths = original_jupyter_path.split(os.pathsep)
+        if runtime_data_dir not in search_paths:
+            os.environ["JUPYTER_PATH"] = os.pathsep.join([runtime_data_dir, *search_paths])
+    else:
+        os.environ["JUPYTER_PATH"] = runtime_data_dir
+
+    try:
+        yield
+    finally:
+        if original_spark_home is not None:
+            os.environ["SPARK_HOME"] = original_spark_home
+        else:
+            os.environ.pop("SPARK_HOME", None)
+
+        if original_jupyter_path is not None:
+            os.environ["JUPYTER_PATH"] = original_jupyter_path
+        else:
+            os.environ.pop("JUPYTER_PATH", None)
+
+
 def execute_notebook(
     notebook_path: Path,
     *,
     output_path: Path | None = None,
     kernel: str,
-    timeout: int = 600,
+    timeout: int | None = None,
     allow_errors: bool = False,
 ) -> ExecutionResult:
-    """Execute a notebook headlessly via ``jupyter nbconvert``.
+    """Execute a notebook headlessly via nbconvert's in-process executor.
 
     Parameters
     ----------
@@ -116,39 +301,8 @@ def execute_notebook(
     if output_path is None:
         output_path = notebook_path.with_suffix(".executed.ipynb")
 
-    cmd = [
-        os.sys.executable,
-        "-m",
-        "jupyter",
-        "nbconvert",
-        "--to",
-        "notebook",
-        "--execute",
-        f"--ExecutePreprocessor.kernel_name={kernel}",
-        f"--ExecutePreprocessor.timeout={timeout}",
-        f"--output={output_path}",
-    ]
-
-    if allow_errors:
-        cmd.append("--ExecutePreprocessor.allow_errors=True")
-
-    cmd.append(str(notebook_path))
-
-    # Remove SPARK_HOME from the subprocess environment so the kernel does
-    # not pick up a local Spark installation.
-    env = os.environ.copy()
-    env.pop("SPARK_HOME", None)
-    runtime_home = resolve_runtime_home(env)
-    runtime_data_dir = str(runtime_home.kernels_dir.parent)
-    existing_jupyter_path = env.get("JUPYTER_PATH")
-    if existing_jupyter_path:
-        search_paths = existing_jupyter_path.split(os.pathsep)
-        if runtime_data_dir not in search_paths:
-            env["JUPYTER_PATH"] = os.pathsep.join([runtime_data_dir, *search_paths])
-    else:
-        env["JUPYTER_PATH"] = runtime_data_dir
-
     start = time.monotonic()
+    runtime_home = resolve_runtime_home()
     try:
         ensure_execution_kernel(kernel, extra_kernel_dirs=[str(runtime_home.kernels_dir)])
     except RuntimeError as exc:
@@ -159,20 +313,34 @@ def execute_notebook(
             error=str(exc),
         )
 
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)  # noqa: S603
-    duration = time.monotonic() - start
+    reporter = _ExecutionProgressReporter()
+    notebook = nbformat.read(str(notebook_path), as_version=4)
+    resources = {"metadata": {"path": str(notebook_path.parent)}}
+    executor = ExecutePreprocessor(
+        kernel_name=kernel,
+        timeout=timeout,
+        allow_errors=allow_errors,
+        on_cell_execute=reporter.on_cell_execute,
+        on_cell_complete=reporter.on_cell_complete,
+        on_cell_executed=reporter.on_cell_executed,
+    )
 
-    if result.returncode == 0:
+    try:
+        with _patched_execution_environment(str(runtime_home.kernels_dir.parent)):
+            executed_notebook, _ = executor.preprocess(notebook, resources)
+    except Exception as exc:
         return ExecutionResult(
-            success=True,
+            success=False,
             output_path=output_path,
-            duration_seconds=duration,
+            duration_seconds=time.monotonic() - start,
+            error=str(exc) or exc.__class__.__name__,
         )
+    finally:
+        reporter.close()
 
-    error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+    nbformat.write(executed_notebook, str(output_path))
     return ExecutionResult(
-        success=False,
+        success=True,
         output_path=output_path,
-        duration_seconds=duration,
-        error=error_msg,
+        duration_seconds=time.monotonic() - start,
     )

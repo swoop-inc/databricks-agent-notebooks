@@ -38,13 +38,15 @@ def test_run_pipeline_delegates(tmp_path: Path, capsys) -> None:
     input_file = tmp_path / "test.md"
     input_file.write_text("# Test\n```scala\nval x = 1\n```\n", encoding="utf-8")
     cluster = Cluster(cluster_id="abc-123", cluster_name="my-cluster", state="RUNNING", spark_version="13.3")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
 
     with (
         patch("databricks_agent_notebooks.cli.to_notebook", return_value=(_make_notebook_mock(), DatabricksConfig(profile="prod", cluster="my-cluster"))),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
         patch("databricks_agent_notebooks.cli.merge_config", return_value=DatabricksConfig(profile="prod", cluster="my-cluster")),
         patch("databricks_agent_notebooks.cli.inject_cells", return_value=_make_notebook_mock()),
-        patch("databricks_agent_notebooks.cli.execute_notebook", return_value=MagicMock(success=True, output_path=input_file, duration_seconds=1.0, error=None)),
+        patch("databricks_agent_notebooks.cli.execute_notebook", return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None)),
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
         patch("databricks_agent_notebooks.cli.default_service", return_value=MagicMock(resolve_cluster=MagicMock(return_value=cluster))),
         patch("databricks_agent_notebooks.cli.nbformat.write"),
@@ -52,12 +54,23 @@ def test_run_pipeline_delegates(tmp_path: Path, capsys) -> None:
         result = main(["run", str(input_file)])
 
     assert result == 0
-    assert "Execution succeeded" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "Execution succeeded" in captured.out
+    phase_lines = [line for line in captured.err.splitlines() if line.startswith("agent-notebook:")]
+    assert phase_lines == [
+        'agent-notebook: phase=prepare input_path="' + str(input_file.resolve()) + '" notebook_stem="test"',
+        'agent-notebook: phase=compute mode=cluster cluster_id="abc-123"',
+        'agent-notebook: phase=execute-start kernel="scala212-dbr-connect" timeout=none',
+        'agent-notebook: phase=render output_dir="' + str((tmp_path / "test_output").resolve()) + '"',
+        'agent-notebook: phase=done success=true duration_s=1.0',
+    ]
 
 
 def test_run_without_cluster_announces_serverless(tmp_path: Path, capsys) -> None:
     input_file = tmp_path / "test.md"
     input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
 
     with (
         patch(
@@ -75,7 +88,7 @@ def test_run_without_cluster_announces_serverless(tmp_path: Path, capsys) -> Non
         ),
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
-            return_value=MagicMock(success=True, output_path=input_file, duration_seconds=1.0, error=None),
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
         ),
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
         patch("databricks_agent_notebooks.cli.default_service"),
@@ -85,8 +98,44 @@ def test_run_without_cluster_announces_serverless(tmp_path: Path, capsys) -> Non
 
     assert result == 0
     captured = capsys.readouterr()
-    assert "No cluster specified — using serverless compute." in captured.err
+    assert 'agent-notebook: phase=compute mode=serverless' in captured.err
     assert "Beta for Scala" not in captured.err
+
+
+def test_run_defaults_timeout_to_none(tmp_path: Path) -> None:
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3"}}
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="prod")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="prod"),
+        ),
+        patch(
+            "databricks_agent_notebooks.cli.inject_cells",
+            return_value=notebook,
+        ),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ) as execute_notebook,
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.default_service"),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        result = main(["run", str(input_file)])
+
+    assert result == 0
+    assert execute_notebook.call_args.kwargs["timeout"] is None
 
 
 def test_install_kernel_command_delegates(tmp_path: Path, capsys) -> None:

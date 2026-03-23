@@ -75,15 +75,15 @@ Recommended agent policy:
 
 - keep file reads, edits, and local/offline checks sandboxed
 - run only the Databricks-facing command outside the sandbox
-- use conservative `--timeout` values for notebook execution; Databricks work can spend meaningful time on cluster startup, serverless warmup, autoscaling, dependency resolution, or queueing before the notebook finishes
-- make sure any outer agent/task timeout is longer than the notebook timeout so the caller does not kill a nearly-complete run first
+- do not set `--timeout` unless you have a concrete upper bound for a cell; the default is intentionally unset because Databricks work can spend meaningful time on cluster startup, serverless warmup, autoscaling, dependency resolution, or queueing before the notebook finishes
+- if you do set `--timeout`, make sure any outer agent/task timeout is longer than the notebook timeout so the caller does not kill a healthy run first
 - do not broaden the unsandboxed exception to unrelated commands
 
 Current progress model:
 
-- `agent-notebook run` prints setup/context messages and a final success or failure summary
-- the execution step itself is currently a quiet `jupyter nbconvert --execute` subprocess, so there is no built-in heartbeat, percent progress, or streamed cell-by-cell log during the long-running portion
-- callers that need stronger liveness guarantees should treat the child process remaining alive as the current progress signal, and should choose watchdog/timeout settings accordingly
+- `agent-notebook run` emits compact progress lines on `stderr` for `prepare`, `compute`, `execute-start`, `cell-start`, `executing`, `render`, `done`, and `failed`
+- `cell-start` identifies the current executing cell with a stable one-line label and snippet, and `executing` emits coarse heartbeats tied to that same cell
+- percent-complete is intentionally not inferred; long-running cells with repeated heartbeats are normal for remote Databricks work
 
 ### Claude Code
 
@@ -145,6 +145,8 @@ Run a notebook through the local execution pipeline after the Databricks prerequ
 agent-notebook run path/to/notebook.md --profile DEFAULT --cluster <cluster-name-or-id>
 ```
 
+Do not add `--timeout` unless you know the cell-level upper bound you want to enforce.
+
 ## What The Project Supports Today
 
 The current release is intentionally conservative about support claims. Verified local/offline surfaces today include:
@@ -177,6 +179,11 @@ For the precise release posture, see [`docs/databricks-support-matrix.md`](docs/
 - [Runtime-home layout](docs/runtime-home.md)
 - [Repository structure](docs/repo-layout.md)
 - [Release and publishing notes](docs/release.md)
+
+## Future Work
+
+- streaming nbconvert output
+- sidecar progress file
 
 ## Contributing
 
