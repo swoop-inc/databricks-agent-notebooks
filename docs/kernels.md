@@ -26,6 +26,7 @@ The standalone runtime now installs managed Scala kernels through a generated la
 - the launcher contract artifact is authoritative for launcher path, bootstrap argv metadata, and the runtime receipt it expects to launch against
 - the launcher clears Spark-specific env at launch time instead of baking Databricks wiring into handwritten kernelspec env blocks
 - the kernel receipt records the generated install directory, runtime id, runtime receipt path, and launcher contract path for repair and doctor flows
+- Python notebook execution uses the environment-local `python3` kernel rather than a generated managed kernelspec; the installed package now ships `ipykernel` and preflights `python3` kernel availability before `agent-notebook run` executes a Python notebook
 
 ## Runtime Identity
 

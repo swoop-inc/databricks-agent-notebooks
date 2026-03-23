@@ -10,11 +10,19 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from jupyter_client.kernelspec import KernelSpecManager, NoSuchKernel
+
 from databricks_agent_notebooks.runtime.home import resolve_runtime_home
+
+try:
+    from ipykernel.kernelspec import install as install_ipykernel
+except ModuleNotFoundError:  # pragma: no cover - exercised via packaging verification
+    install_ipykernel = None
 
 
 @dataclass(frozen=True)
@@ -25,6 +33,43 @@ class ExecutionResult:
     output_path: Path | None
     duration_seconds: float
     error: str | None = None
+
+
+def _missing_kernel_error(kernel: str) -> RuntimeError:
+    return RuntimeError(
+        f"Jupyter kernel '{kernel}' is not available in the current environment. "
+        "Install or repair the matching kernel before running the notebook."
+    )
+
+
+def ensure_execution_kernel(kernel: str) -> None:
+    """Ensure the requested Jupyter kernel exists before running nbconvert."""
+    manager = KernelSpecManager()
+    try:
+        manager.get_kernel_spec(kernel)
+        return
+    except NoSuchKernel as exc:
+        if kernel != "python3":
+            raise _missing_kernel_error(kernel) from exc
+
+    if install_ipykernel is None:
+        raise RuntimeError(
+            "Jupyter kernel 'python3' is not available and ipykernel is not installed. "
+            "Reinstall databricks-agent-notebooks with its packaged dependencies."
+        )
+
+    install_ipykernel(
+        kernel_spec_manager=manager,
+        kernel_name="python3",
+        prefix=sys.prefix,
+    )
+
+    try:
+        manager.get_kernel_spec("python3")
+    except NoSuchKernel as exc:
+        raise RuntimeError(
+            "Jupyter kernel 'python3' is still unavailable after attempting an ipykernel repair."
+        ) from exc
 
 
 def execute_notebook(
@@ -60,6 +105,8 @@ def execute_notebook(
     """
     if output_path is None:
         output_path = notebook_path.with_suffix(".executed.ipynb")
+
+    ensure_execution_kernel(kernel)
 
     cmd = [
         os.sys.executable,

@@ -73,6 +73,17 @@ def test_build_proof_env_isolates_runtime_home_and_fake_bin(tmp_path: Path) -> N
     assert "PYTHONPATH" not in env
 
 
+def test_write_python_run_smoke_input_creates_python_markdown(tmp_path: Path) -> None:
+    module = _load_proof_module()
+
+    notebook_path = module.write_python_run_smoke_input(tmp_path)
+
+    assert notebook_path == tmp_path / "python-run-smoke.md"
+    content = notebook_path.read_text(encoding="utf-8")
+    assert "```python" in content
+    assert "print(\"artifact smoke\")" in content
+
+
 def test_validate_generated_artifacts_checks_cross_references(tmp_path: Path) -> None:
     module = _load_proof_module()
     runtime_home = tmp_path / "runtime-home"

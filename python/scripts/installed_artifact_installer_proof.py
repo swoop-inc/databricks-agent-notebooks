@@ -149,6 +149,15 @@ def install_fake_tooling(fake_bin: Path) -> None:
     write_databricks_shim(fake_bin / "databricks")
 
 
+def write_python_run_smoke_input(root: Path) -> Path:
+    notebook_path = root / "python-run-smoke.md"
+    notebook_path.write_text(
+        "# Python run smoke\n\n```python\nprint(\"artifact smoke\")\n```\n",
+        encoding="utf-8",
+    )
+    return notebook_path
+
+
 def _agent_notebook_bin() -> Path:
     sibling = Path(sys.executable).with_name("agent-notebook")
     if sibling.is_file():
@@ -282,6 +291,7 @@ def run_proof() -> None:
         install_fake_tooling(layout.fake_bin)
         env = build_proof_env(fake_bin=layout.fake_bin, runtime_home=layout.runtime_home, home_dir=layout.home_dir)
         agent_notebook = _agent_notebook_bin()
+        python_run_input = write_python_run_smoke_input(layout.root)
 
         install_result = _run(
             [
@@ -340,6 +350,32 @@ def run_proof() -> None:
 
         post_doctor_snapshot = _snapshot_tree(layout.root)
         _expect(post_doctor_snapshot == pre_doctor_snapshot, "doctor commands mutated proof-root artifacts")
+
+        python_run_result = _run(
+            [
+                str(agent_notebook),
+                "run",
+                str(python_run_input),
+                "--no-inject-session",
+                "--format",
+                "md",
+            ],
+            env=env,
+            cwd=layout.root,
+        )
+        _assert_success(python_run_result, "agent-notebook run python smoke")
+        _expect(
+            "Execution succeeded" in python_run_result.stdout,
+            "python run smoke did not report successful execution",
+        )
+        smoke_output_dir = layout.root / "python-run-smoke_output"
+        smoke_render_path = smoke_output_dir / "python-run-smoke.executed.md"
+        _expect(smoke_output_dir.is_dir(), f"python run smoke output directory missing: {smoke_output_dir}")
+        _expect(smoke_render_path.is_file(), f"python run smoke markdown missing: {smoke_render_path}")
+        _expect(
+            "artifact smoke" in smoke_render_path.read_text(encoding="utf-8"),
+            "python run smoke markdown did not contain executed output",
+        )
 
         print(f"Installed artifact proof succeeded for kernel '{KERNEL_ID}'.")
         print(f"Kernel dir: {artifacts.kernel_dir}")

@@ -8,13 +8,13 @@ The standalone repository should only make release claims that are verified by t
 - keep one stable gate job suitable for branch protection
 - build sdists and wheels in CI
 - validate distribution metadata and archive structure before installation
-- prove installed wheels can execute offline installer and doctor flows in a clean environment, not only editable installs
+- prove installed wheels can execute offline installer, doctor, and Python notebook run flows in a clean environment, not only editable installs
 
 ## Current Verified Evidence
 
 - the Python CI workflow runs `pytest` against `python/tests/unit`
 - CI builds both wheel and sdist artifacts, runs `twine check --strict`, and inspects the built archives
-- CI installs the built wheel into a clean virtualenv, verifies the installed CLI entry point, and runs the offline installer proof against isolated local paths
+- CI installs the built wheel into a clean virtualenv, verifies the installed CLI entry point, and runs the offline installer proof against isolated local paths including a real Python notebook execution smoke
 - release/support messaging should avoid support or compatibility claims that are not covered by the repository evidence
 
 ## Publishing Direction
@@ -45,4 +45,4 @@ Actual uploads still depend on GitHub environment protection rules and PyPI/Test
 
 ## Current Tranche
 
-The repository now has a Python CI workflow that runs unit tests from the source tree, validates built artifacts, proves the installed wheel can execute local/offline installer flows, and includes Trusted Publishing scaffolding for TestPyPI and PyPI. Actual publishing remains gated on external GitHub and package-index configuration, and release/support claims should stay limited to the local/offline surface that the repository can verify today.
+The repository now has a Python CI workflow that runs unit tests from the source tree, validates built artifacts, proves the installed wheel can execute local/offline installer and Python notebook run flows, and includes Trusted Publishing scaffolding for TestPyPI and PyPI. Actual publishing remains gated on external GitHub and package-index configuration, and release/support claims should stay limited to the local/offline surface that the repository can verify today.

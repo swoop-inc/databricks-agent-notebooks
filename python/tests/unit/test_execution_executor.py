@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
+from jupyter_client.kernelspec import NoSuchKernel
 
-from databricks_agent_notebooks.execution.executor import ExecutionResult, execute_notebook
+from databricks_agent_notebooks.execution.executor import (
+    ExecutionResult,
+    ensure_execution_kernel,
+    execute_notebook,
+)
 from databricks_agent_notebooks.runtime.home import HOME_ENV_VAR
 
 
@@ -19,20 +25,23 @@ def notebook_path(tmp_path: Path) -> Path:
     return path
 
 
+@patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
 @patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_kernel_and_timeout_are_passed_to_nbconvert(mock_run, notebook_path: Path) -> None:
+def test_kernel_and_timeout_are_passed_to_nbconvert(mock_run, ensure_kernel, notebook_path: Path) -> None:
     mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     execute_notebook(notebook_path, kernel="my-kernel", timeout=300)
 
+    ensure_kernel.assert_called_once_with("my-kernel")
     cmd = mock_run.call_args[0][0]
     assert cmd[:3] == [os.sys.executable, "-m", "jupyter"]
     assert "--ExecutePreprocessor.kernel_name=my-kernel" in cmd
     assert "--ExecutePreprocessor.timeout=300" in cmd
 
 
+@patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
 @patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_spark_home_is_removed_from_env(mock_run, notebook_path: Path) -> None:
+def test_spark_home_is_removed_from_env(mock_run, _ensure_kernel, notebook_path: Path) -> None:
     mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     with patch.dict(os.environ, {"SPARK_HOME": "/some/spark"}, clear=False):
@@ -42,8 +51,9 @@ def test_spark_home_is_removed_from_env(mock_run, notebook_path: Path) -> None:
     assert "SPARK_HOME" not in env
 
 
+@patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
 @patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_runtime_home_kernel_path_is_added_to_jupyter_search_path(mock_run, notebook_path: Path, tmp_path: Path) -> None:
+def test_runtime_home_kernel_path_is_added_to_jupyter_search_path(mock_run, _ensure_kernel, notebook_path: Path, tmp_path: Path) -> None:
     mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
     runtime_home = tmp_path / "runtime-home"
 
@@ -54,8 +64,9 @@ def test_runtime_home_kernel_path_is_added_to_jupyter_search_path(mock_run, note
     assert env["JUPYTER_PATH"] == str(runtime_home / "data")
 
 
+@patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
 @patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_successful_run_returns_execution_result(mock_run, notebook_path: Path) -> None:
+def test_successful_run_returns_execution_result(mock_run, _ensure_kernel, notebook_path: Path) -> None:
     mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     result = execute_notebook(notebook_path, kernel="python3")
@@ -63,3 +74,28 @@ def test_successful_run_returns_execution_result(mock_run, notebook_path: Path) 
     assert isinstance(result, ExecutionResult)
     assert result.success is True
     assert result.error is None
+
+
+def test_ensure_execution_kernel_bootstraps_python3_when_missing() -> None:
+    manager = Mock()
+    manager.get_kernel_spec.side_effect = [NoSuchKernel("python3"), object()]
+
+    with (
+        patch("databricks_agent_notebooks.execution.executor.KernelSpecManager", return_value=manager),
+        patch("databricks_agent_notebooks.execution.executor.install_ipykernel", autospec=True) as install_ipykernel,
+    ):
+        ensure_execution_kernel("python3")
+
+    install_ipykernel.assert_called_once_with(
+        kernel_spec_manager=manager,
+        kernel_name="python3",
+        prefix=sys.prefix,
+    )
+
+
+def test_ensure_execution_kernel_raises_for_missing_non_python_kernel() -> None:
+    manager = type("Manager", (), {"get_kernel_spec": lambda self, name: (_ for _ in ()).throw(NoSuchKernel(name))})()
+
+    with patch("databricks_agent_notebooks.execution.executor.KernelSpecManager", return_value=manager):
+        with pytest.raises(RuntimeError, match="my-kernel"):
+            ensure_execution_kernel("my-kernel")
