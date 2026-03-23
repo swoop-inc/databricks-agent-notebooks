@@ -50,6 +50,33 @@ These are required for commands that inspect Databricks configuration or resolve
 
 The current package uses the Databricks CLI for cluster discovery and profile validation helpers. That is a package requirement for those code paths, not a universal Databricks Connect requirement.
 
+## For Agents And Sandboxed Runners
+
+If you are running `agent-notebook` from an agent framework or a sandboxed execution environment, separate local/offline commands from live Databricks commands.
+
+Usually safe in sandbox:
+
+- `agent-notebook help`
+- `agent-notebook render ...`
+- `agent-notebook kernels install ...`
+- `agent-notebook kernels doctor ...`
+- `agent-notebook runtimes list`
+- `agent-notebook runtimes doctor`
+
+Commands that may need an unsandboxed execution path:
+
+- `agent-notebook run ...` when it must talk to Databricks
+- `agent-notebook clusters ...`
+- any workflow that depends on live Databricks CLI network access
+
+Observed failure mode in restricted sandboxes: Databricks-facing commands can fail with DNS, TLS, or certificate verification errors even when the same command works from the host shell. If that happens, treat it as an execution-environment constraint first, not as proof that `agent-notebook` itself is misconfigured.
+
+Recommended agent policy:
+
+- keep file reads, edits, and local/offline checks sandboxed
+- run only the Databricks-facing command outside the sandbox
+- do not broaden the unsandboxed exception to unrelated commands
+
 ## Databricks Connect Versioning
 
 The current release can resolve target cluster identity, but it does not auto-install or auto-switch `databricks-connect` in your local Python environment.
