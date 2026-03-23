@@ -82,7 +82,8 @@ Recommended agent policy:
 Current progress model:
 
 - `agent-notebook run` emits compact progress lines on `stderr` for `prepare`, `compute`, `execute-start`, `cell-start`, `executing`, `render`, `done`, and `failed`
-- `cell-start` identifies the current executing cell with a stable one-line label and snippet, and `executing` emits coarse heartbeats tied to that same cell
+- `cell-start` identifies the current executing cell with `cell_index` plus safe generic descriptors such as `[code cell]` or `[AGENT-NOTEBOOK:INJECTED] Databricks session setup`; the emitted `cell_snippet` is `[source redacted]`
+- `executing` emits coarse heartbeats tied to that same safe cell descriptor set
 - percent-complete is intentionally not inferred; long-running cells with repeated heartbeats are normal for remote Databricks work
 
 ### Claude Code

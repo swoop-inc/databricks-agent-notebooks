@@ -31,8 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised via packaging verifi
 
 
 HEARTBEAT_INTERVAL_SECONDS = 30.0
-CELL_LABEL_MAX_CHARS = 80
-CELL_SNIPPET_MAX_CHARS = 140
+REDACTED_CELL_SNIPPET = "[source redacted]"
 
 
 class RawProgressValue(str):
@@ -118,23 +117,6 @@ def ensure_execution_kernel(
         ) from exc
 
 
-def _normalize_whitespace(value: str) -> str:
-    return " ".join(value.split())
-
-
-def _truncate(value: str, *, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return f"{value[: limit - 3]}..."
-
-
-def _strip_comment_prefix(line: str) -> str:
-    for prefix in ("#", "//", "--"):
-        if line.startswith(prefix):
-            return line[len(prefix) :].strip()
-    return line
-
-
 def _iter_meaningful_lines(source: str) -> list[str]:
     return [line.strip() for line in source.splitlines() if line.strip()]
 
@@ -142,25 +124,16 @@ def _iter_meaningful_lines(source: str) -> list[str]:
 def _build_cell_label(cell: nbformat.NotebookNode, lines: list[str]) -> str:
     if cell.metadata.get("agent_notebook_injected", False):
         return "[AGENT-NOTEBOOK:INJECTED] Databricks session setup"
+    cell_type = str(cell.get("cell_type", "cell"))
+    if not lines:
+        return f"[empty {cell_type} cell]"
+    return f"[{cell_type} cell]"
+
+
+def _build_cell_snippet(_cell: nbformat.NotebookNode, lines: list[str]) -> str:
     if not lines:
         return "[empty cell]"
-    return _truncate(_normalize_whitespace(_strip_comment_prefix(lines[0])), limit=CELL_LABEL_MAX_CHARS)
-
-
-def _build_cell_snippet(cell: nbformat.NotebookNode, lines: list[str]) -> str:
-    snippet_lines = lines
-    if cell.metadata.get("agent_notebook_injected", False):
-        snippet_lines = [
-            line for line in lines
-            if not line.startswith(("# [AGENT-NOTEBOOK:INJECTED]", "// [AGENT-NOTEBOOK:INJECTED]", "# Source:", "// Source:"))
-        ]
-    else:
-        code_only_lines = [line for line in lines if not line.startswith(("#", "//", "--"))]
-        if code_only_lines:
-            snippet_lines = code_only_lines
-    if not snippet_lines:
-        return "[empty cell]"
-    return _truncate(_normalize_whitespace(" ".join(snippet_lines)), limit=CELL_SNIPPET_MAX_CHARS)
+    return REDACTED_CELL_SNIPPET
 
 
 def _describe_cell(cell: nbformat.NotebookNode, *, cell_index: int) -> dict[str, object]:

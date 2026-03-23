@@ -147,7 +147,7 @@ def test_ensure_execution_kernel_raises_for_missing_non_python_kernel() -> None:
             ensure_execution_kernel("my-kernel")
 
 
-def test_execute_notebook_emits_cell_progress_with_normalized_truncated_snippet(
+def test_execute_notebook_emits_safe_cell_progress_for_injected_cells(
     notebook_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -190,10 +190,8 @@ def test_execute_notebook_emits_cell_progress_with_normalized_truncated_snippet(
     progress_lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith("agent-notebook:")]
     assert progress_lines[0].startswith("agent-notebook: phase=cell-start cell_index=1")
     assert 'cell_label="[AGENT-NOTEBOOK:INJECTED] Databricks session setup"' in progress_lines[0]
-    assert (
-        'cell_snippet="from databricks.connect import DatabricksSession '
-        'spark = DatabricksSession.builder.serverless().getOrCreate()"' in progress_lines[0]
-    )
+    assert 'cell_snippet="[source redacted]"' in progress_lines[0]
+    assert "DatabricksSession.builder.serverless" not in progress_lines[0]
     assert any("phase=executing" in line and "heartbeat=1" in line and "cell_index=1" in line for line in progress_lines[1:])
 
 
@@ -262,17 +260,16 @@ def test_execute_notebook_keeps_heartbeats_running_until_on_cell_executed(
     assert all("cell_index=1" in line for line in progress_lines)
 
 
-def test_execute_notebook_truncates_long_cell_snippets(
+def test_execute_notebook_redacts_user_cell_source_from_progress(
     notebook_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     notebook = nbformat.v4.new_notebook(
         cells=[
             nbformat.v4.new_code_cell(
-                "result = spark.sql(\"select * from very_large_table where partition = '2026-03-23' "
-                "and region = 'us-east-1' and env = 'prod' order by event_time desc limit 200\")\n"
-                "display(result)\n"
-                "result.count()"
+                'token = "abc123secret"\n'
+                "use(token)\n"
+                "display(token)"
             )
         ]
     )
@@ -295,8 +292,10 @@ def test_execute_notebook_truncates_long_cell_snippets(
         result = execute_notebook(notebook_path, kernel="python3")
 
     assert result.success is True
-    progress_lines = [line for line in capsys.readouterr().err.splitlines() if "phase=cell-start" in line]
+    stderr = capsys.readouterr().err
+    progress_lines = [line for line in stderr.splitlines() if "phase=cell-start" in line]
     assert len(progress_lines) == 1
-    assert 'cell_snippet="' in progress_lines[0]
-    assert '..."' in progress_lines[0]
-    assert "result.count()" not in progress_lines[0]
+    assert 'cell_label="[code cell]"' in progress_lines[0]
+    assert 'cell_snippet="[source redacted]"' in progress_lines[0]
+    assert "abc123secret" not in stderr
+    assert 'token = "' not in stderr
