@@ -77,6 +77,15 @@ Recommended agent policy:
 - run only the Databricks-facing command outside the sandbox
 - do not broaden the unsandboxed exception to unrelated commands
 
+### Claude Code
+
+If you are using Claude Code, evaluate whether `agent-notebook` should be added to `sandbox.excludedCommands` in either:
+
+- your global Claude Code settings, if this is a machine-wide default you want everywhere
+- the repository-local Claude Code settings, if you only want the exception for a specific workspace
+
+Prefer the narrowest scope that matches your workflow. The goal is not to disable sandboxing broadly, but to let the specific Databricks-facing `agent-notebook` command run outside the sandbox when sandbox networking breaks live Databricks access.
+
 ## Databricks Connect Versioning
 
 The current release can resolve target cluster identity, but it does not auto-install or auto-switch `databricks-connect` in your local Python environment.
