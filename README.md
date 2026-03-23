@@ -75,7 +75,15 @@ Recommended agent policy:
 
 - keep file reads, edits, and local/offline checks sandboxed
 - run only the Databricks-facing command outside the sandbox
+- use conservative `--timeout` values for notebook execution; Databricks work can spend meaningful time on cluster startup, serverless warmup, autoscaling, dependency resolution, or queueing before the notebook finishes
+- make sure any outer agent/task timeout is longer than the notebook timeout so the caller does not kill a nearly-complete run first
 - do not broaden the unsandboxed exception to unrelated commands
+
+Current progress model:
+
+- `agent-notebook run` prints setup/context messages and a final success or failure summary
+- the execution step itself is currently a quiet `jupyter nbconvert --execute` subprocess, so there is no built-in heartbeat, percent progress, or streamed cell-by-cell log during the long-running portion
+- callers that need stronger liveness guarantees should treat the child process remaining alive as the current progress signal, and should choose watchdog/timeout settings accordingly
 
 ### Claude Code
 
