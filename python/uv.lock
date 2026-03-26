@@ -310,14 +310,14 @@ wheels = [
 
 [[package]]
 name = "databricks-agent-notebooks"
-version = "0.1.2"
+version = "0.2.2"
 source = { editable = "." }
 dependencies = [
     { name = "databricks-sdk" },
     { name = "ipykernel" },
     { name = "jupytext" },
     { name = "nbconvert" },
-    { name = "nbformat" },
+    { name = "nbformat-swoop" },
     { name = "platformdirs" },
     { name = "pyyaml" },
     { name = "rapidfuzz" },
@@ -334,7 +334,7 @@ requires-dist = [
     { name = "ipykernel", specifier = ">=6.29" },
     { name = "jupytext", specifier = ">=1.16" },
     { name = "nbconvert", specifier = ">=7.16" },
-    { name = "nbformat", git = "https://github.com/swoop-inc/nbformat.git?rev=fix%2Fdefensive-error-output-from-msg" },
+    { name = "nbformat-swoop", specifier = ">=5.10.4.post1" },
     { name = "platformdirs", specifier = ">=4.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -810,12 +810,31 @@ wheels = [
 [[package]]
 name = "nbformat"
 version = "5.10.4"
-source = { git = "https://github.com/swoop-inc/nbformat.git?rev=fix%2Fdefensive-error-output-from-msg#b7aeeb8be1eb666780bc9d84ff4726af1112d6f4" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastjsonschema" },
     { name = "jsonschema" },
     { name = "jupyter-core" },
     { name = "traitlets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6d/fd/91545e604bc3dad7dca9ed03284086039b294c6b3d75c0d2fa45f9e9caf3/nbformat-5.10.4.tar.gz", hash = "sha256:322168b14f937a5d11362988ecac2a4952d3d8e3a2cbeb2319584631226d5b3a", size = 142749, upload-time = "2024-04-04T11:20:37.371Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/82/0340caa499416c78e5d8f5f05947ae4bc3cba53c9f038ab6e9ed964e22f1/nbformat-5.10.4-py3-none-any.whl", hash = "sha256:3b48d6c8fbca4b299bf3982ea7db1af21580e4fec269ad087b9e81588891200b", size = 78454, upload-time = "2024-04-04T11:20:34.895Z" },
+]
+
+[[package]]
+name = "nbformat-swoop"
+version = "5.10.4.post1"
+source = { registry = "../../nbformat/dist" }
+dependencies = [
+    { name = "fastjsonschema" },
+    { name = "jsonschema" },
+    { name = "jupyter-core" },
+    { name = "traitlets" },
+]
+sdist = { path = "nbformat_swoop-5.10.4.post1.tar.gz" }
+wheels = [
+    { path = "nbformat_swoop-5.10.4.post1-py3-none-any.whl" },
 ]
 
 [[package]]

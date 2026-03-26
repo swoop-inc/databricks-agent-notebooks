@@ -189,7 +189,11 @@ def test_publish_workflow_uses_trusted_publishing_scaffolding() -> None:
     assert pypi_job["if"] == (
         "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
     )
-    assert pypi_job["permissions"] == {"id-token": "write"}
+    assert pypi_job["permissions"] == {
+        "id-token": "write",
+        "attestations": "write",
+        "contents": "read",
+    }
     assert pypi_job["environment"] == "pypi"
     assert pypi_job["steps"][0]["uses"] == (
         "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"

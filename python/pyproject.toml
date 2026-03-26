@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "databricks-agent-notebooks"
-version = "0.2.1"
+version = "0.2.2"
 description = "Standalone notebook conversion and local runtime tooling for the databricks-agent-notebooks repository."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,7 +29,7 @@ dependencies = [
   "ipykernel>=6.29",
   "jupytext>=1.16",
   "nbconvert>=7.16",
-  "nbformat @ git+https://github.com/swoop-inc/nbformat.git@fix/defensive-error-output-from-msg",
+  "nbformat-swoop>=5.10.4.post1",
   "platformdirs>=4.3",
   "PyYAML>=6.0",
   "rapidfuzz>=3.0",
