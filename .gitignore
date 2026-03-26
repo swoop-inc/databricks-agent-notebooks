@@ -1,0 +1,16 @@
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+python/.venv/
+python/.artifact-venv/
+python/.pytest_cache/
+python/dist/
+python/build/
+python/src/*.egg-info/
+
+docs/plans/
+plans/
+.worktrees/
+
+tmp/

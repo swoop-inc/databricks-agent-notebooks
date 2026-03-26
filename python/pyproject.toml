@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "databricks-agent-notebooks"
+version = "0.2.1"
+description = "Standalone notebook conversion and local runtime tooling for the databricks-agent-notebooks repository."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Swoop" },
+]
+keywords = ["databricks", "jupyter", "notebooks"]
+classifiers = [
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+  # Cluster pagination currently depends on verified 0.102.x low-level SDK surfaces:
+  # WorkspaceClient.api_client.do(...) and ListClustersResponse.from_dict(...).
+  "databricks-sdk>=0.102.0,<0.103.0",
+  "ipykernel>=6.29",
+  "jupytext>=1.16",
+  "nbconvert>=7.16",
+  "nbformat @ git+https://github.com/swoop-inc/nbformat.git@fix/defensive-error-output-from-msg",
+  "platformdirs>=4.3",
+  "PyYAML>=6.0",
+  "rapidfuzz>=3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/swoop-inc/databricks-agent-notebooks"
+Repository = "https://github.com/swoop-inc/databricks-agent-notebooks"
+Issues = "https://github.com/swoop-inc/databricks-agent-notebooks/issues"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+agent-notebook = "databricks_agent_notebooks.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["databricks_agent_notebooks*"]
+
+[tool.setuptools.package-data]
+databricks_agent_notebooks = ["for_agents/*.md", "for_agents/**/*.md", "for_agents/**/*"]
