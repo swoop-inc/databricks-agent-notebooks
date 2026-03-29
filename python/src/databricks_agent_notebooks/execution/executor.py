@@ -33,8 +33,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised via packaging verifi
     install_ipykernel = None
 
 
-HEARTBEAT_INTERVAL_SECONDS = 30.0
-REDACTED_CELL_SNIPPET = "[source redacted]"
+HEARTBEAT_INTERVAL_SECONDS = 60.0
 
 
 class RawProgressValue(str):
@@ -133,18 +132,11 @@ def _build_cell_label(cell: nbformat.NotebookNode, lines: list[str]) -> str:
     return f"[{cell_type} cell]"
 
 
-def _build_cell_snippet(_cell: nbformat.NotebookNode, lines: list[str]) -> str:
-    if not lines:
-        return "[empty cell]"
-    return REDACTED_CELL_SNIPPET
-
-
 def _describe_cell(cell: nbformat.NotebookNode, *, cell_index: int) -> dict[str, object]:
     lines = _iter_meaningful_lines(cell.source)
     return {
         "cell_index": cell_index + 1,
         "cell_label": _build_cell_label(cell, lines),
-        "cell_snippet": _build_cell_snippet(cell, lines),
     }
 
 
@@ -366,7 +358,7 @@ def _execute_notebook_subprocess(
         result_path = Path(result_file.name)
 
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             _subprocess_command(
                 python_executable=python_executable,
                 notebook_path=notebook_path,
@@ -376,14 +368,30 @@ def _execute_notebook_subprocess(
                 timeout=timeout,
                 allow_errors=allow_errors,
             ),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=False,
         )
-        if completed.stdout:
-            print(completed.stdout, end="", file=sys.stdout)
-        if completed.stderr:
-            print(completed.stderr, end="", file=sys.stderr)
+
+        stderr_lines: list[str] = []
+
+        def _stream_stderr() -> None:
+            assert process.stderr is not None
+            for line in process.stderr:
+                print(line, end="", file=sys.stderr, flush=True)
+                stderr_lines.append(line)
+
+        stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
+        stderr_thread.start()
+
+        stdout_text = process.stdout.read() if process.stdout else ""
+        process.wait()
+        stderr_thread.join()
+
+        if stdout_text:
+            print(stdout_text, end="", file=sys.stdout)
+
+        stderr_text = "".join(stderr_lines).strip()
 
         if result_path.is_file():
             payload = json.loads(result_path.read_text(encoding="utf-8"))
@@ -399,7 +407,7 @@ def _execute_notebook_subprocess(
             success=False,
             output_path=output_path,
             duration_seconds=time.monotonic() - start,
-            error=completed.stderr.strip() or f"Managed runtime execution failed with exit code {completed.returncode}",
+            error=stderr_text or f"Managed runtime execution failed with exit code {process.returncode}",
         )
     finally:
         result_path.unlink(missing_ok=True)
@@ -417,7 +425,7 @@ def execute_notebook(
     if output_path is None:
         output_path = notebook_path.with_suffix(".executed.ipynb")
 
-    if python_executable is not None and python_executable.resolve() != Path(sys.executable).resolve():
+    if python_executable is not None and str(python_executable.resolve().parent.parent) != sys.prefix:
         return _execute_notebook_subprocess(
             notebook_path,
             output_path=output_path,

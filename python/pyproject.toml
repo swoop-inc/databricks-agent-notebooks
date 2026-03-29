@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "databricks-agent-notebooks"
-version = "0.2.2"
+version = "0.2.3"
 description = "Standalone notebook conversion and local runtime tooling for the databricks-agent-notebooks repository."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -52,6 +52,12 @@ agent-notebook = "databricks_agent_notebooks.cli:main"
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["src"]
+markers = [
+    "integration: Fast integration tests (CLI smoke, no side effects)",
+    "slow: Slow tests (kernel downloads, package installs, real execution)",
+    "spark: Tests requiring local PySpark installation",
+    "databricks: Tests requiring live Databricks workspace credentials",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -26,7 +26,7 @@ _LINE_RE = re.compile(r"(?P<major>\d+)\.(?P<minor>\d+)")
 SERVERLESS_CONNECT_OVERRIDE_ENV_VAR = "DATABRICKS_AGENT_NOTEBOOKS_SERVERLESS_CONNECT_LINE"
 SERVERLESS_RUNTIME_CACHE_FILENAME = "serverless-runtime-policy-cache.json"
 _SERVERLESS_RUNTIME_CACHE_VERSION = "1"
-_DEFAULT_SERVERLESS_CONNECT_LINES = ("16.4", "15.4")
+_DEFAULT_SERVERLESS_CONNECT_LINES = ("16.4",)
 
 
 def _normalize_major_minor_line(value: str, *, label: str) -> str:
@@ -104,9 +104,32 @@ def _runtime_python_executable(install_root: Path) -> Path:
 
 
 def _default_package_install_target() -> list[str]:
+    # Development install: editable from source tree
     package_root = Path(__file__).resolve().parents[3]
     if (package_root / "pyproject.toml").is_file():
         return ["-e", str(package_root)]
+
+    # Global/tool install: find original source via distribution metadata
+    try:
+        from importlib.metadata import distribution
+        dist = distribution("databricks-agent-notebooks")
+        direct_url_text = dist.read_text("direct_url.json")
+        if direct_url_text:
+            url_info = json.loads(direct_url_text)
+            url = url_info.get("url", "")
+            if url.startswith("file://"):
+                source_path = Path(url.removeprefix("file://"))
+                if (source_path / "pyproject.toml").is_file():
+                    return [str(source_path)]
+    except Exception:
+        pass
+
+    if __version__ == "0.0.0-dev":
+        raise RuntimeError(
+            "Cannot determine a valid install target for databricks-agent-notebooks: "
+            "package metadata is unavailable and no source tree was found. "
+            "Install the package first ('uv pip install -e .') or set PYTHONPATH to the source tree."
+        )
     return [f"databricks-agent-notebooks=={__version__}"]
 
 
@@ -266,12 +289,14 @@ def materialize_managed_runtime(
     python_executable = _runtime_python_executable(install_root)
     receipt_path = runtime_receipt_path(resolved_home, spec.runtime_id)
 
+    venv_just_created = False
     if not python_executable.is_file():
         venv_dir = python_executable.parent.parent
         install_root.mkdir(parents=True, exist_ok=True)
         subprocess_run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+        venv_just_created = True
 
-    if not python_executable.is_file() or not receipt_path.is_file():
+    if venv_just_created or not receipt_path.is_file():
         subprocess_run([str(python_executable), "-m", "pip", "install", "--upgrade", "pip"], check=True)
         subprocess_run(
             [

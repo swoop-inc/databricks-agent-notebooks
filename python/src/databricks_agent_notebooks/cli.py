@@ -15,6 +15,7 @@ import tempfile
 from importlib import resources
 from pathlib import Path
 
+from databricks_agent_notebooks import __version__
 from databricks_agent_notebooks.config.frontmatter import DatabricksConfig, merge_config
 from databricks_agent_notebooks.execution.executor import RawProgressValue, emit_progress_signal, execute_notebook
 from databricks_agent_notebooks.execution.injection import inject_cells
@@ -74,6 +75,10 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Databricks notebook execution: normalize, inject, execute, render.",
         epilog=_agent_docs_epilog(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version", action="version",
+        version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -565,18 +570,6 @@ def _print_doctor_checks(checks: list[Check]) -> list[Check]:
     return [check for check in checks if check.status == "fail"]
 
 
-def _cmd_kernels_doctor(args: argparse.Namespace) -> int:
-    """Run environment validation checks."""
-    checks = _run_kernels_doctor_checks(args)
-    failures = _print_doctor_checks(checks)
-    if failures:
-        print(f"\n{len(failures)} check(s) failed.", file=sys.stderr)
-        return 1
-
-    print("\nAll checks passed.")
-    return 0
-
-
 def _cmd_kernels(args: argparse.Namespace) -> int:
     handler = _KERNEL_HANDLERS.get(args.kernels_command)
     if handler is None:
@@ -598,18 +591,6 @@ def _cmd_runtimes_list(_args: argparse.Namespace) -> int:
             f"{runtime.runtime_id:<24} {runtime.status:<16} {runtime.databricks_line:<8} "
             f"{runtime.python_line:<8} {runtime.receipt_path!s:<18} {runtime.install_root}"
         )
-    return 0
-
-
-def _cmd_runtimes_doctor(_args: argparse.Namespace) -> int:
-    """Validate managed runtime receipts rooted under runtime-home."""
-    checks = _run_runtimes_doctor_checks()
-    failures = _print_doctor_checks(checks)
-    if failures:
-        print(f"\n{len(failures)} check(s) failed.", file=sys.stderr)
-        return 1
-
-    print("\nAll checks passed.")
     return 0
 
 
@@ -640,12 +621,10 @@ _KERNEL_HANDLERS = {
     "install": _cmd_kernels_install,
     "list": _cmd_kernels_list,
     "remove": _cmd_kernels_remove,
-    "doctor": _cmd_kernels_doctor,
 }
 
 _RUNTIME_HANDLERS = {
     "list": _cmd_runtimes_list,
-    "doctor": _cmd_runtimes_doctor,
 }
 
 

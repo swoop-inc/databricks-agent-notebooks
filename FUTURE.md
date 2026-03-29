@@ -2,6 +2,7 @@
 
 ## Primary (for agents)
 
+- Scala local Spark integration tests (Almond kernel with local Spark JARs on classpath, Spark 3.x + 4.x matrix)
 - SKILL
 - Re-design doctor output for agents -> to go into memory
 - include cell termination signals in run output to allow agents to do follow-up tasks in parallel

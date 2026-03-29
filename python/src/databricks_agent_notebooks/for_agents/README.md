@@ -20,9 +20,8 @@ Usually safe in a sandbox:
 
 - `agent-notebook help`
 - `agent-notebook render ...`
-- `agent-notebook kernels doctor ...`
+- `agent-notebook doctor`
 - `agent-notebook runtimes list`
-- `agent-notebook runtimes doctor`
 
 Usually safe only when outbound artifact downloads are allowed:
 
@@ -63,8 +62,16 @@ agent-notebook run notebook.md --profile prod --cluster 0123-456789-abcdef
 agent-notebook run notebook.md --profile prod --cluster my-cluster
 ```
 
-If the `run` command cannot resolve a cluster name, its error message will 
+If the `run` command cannot resolve a cluster name, its error message will
 include helpful fuzzy matches for clusters you can present to the user.
+
+On large workspaces with many clusters, the 30-second cluster-listing timeout
+may expire before an exact match is found. When this happens, `agent-notebook`
+returns fuzzy name suggestions based on partial results received before the
+timeout. Inspect these suggestions — the full cluster name (e.g.,
+`"rnd-alpha [engineering]"` instead of `"rnd-alpha"`) usually resolves the
+issue. Passing a cluster ID is the deterministic path for cluster-based
+execution and is never subject to timeouts.
 
 The only time `agent-notebook clusters` is appropriate is during the initial
 `agent_doctor.md` readiness flow to verify live Databricks connectivity. Once
@@ -81,6 +88,8 @@ Recommended agent policy:
 - run only the Databricks-facing command outside the sandbox when needed
 - if sandboxed notebook startup fails around IPython or Jupyter runtime state,
   check whether the sandbox needs write access to `~/.ipython`
+- for Scala notebooks, the Almond kernel requires write access to
+  `~/Library/Caches/Almond/` on macOS
 
 ## Progress model
 
@@ -98,43 +107,126 @@ Current progress model:
 
 ## Timeouts
 
-Only set `--timeout` if you have a high-confidence real upper bound for the cell or
-notebook you are running. Otherwise, you risk losing valuable work due to factors you cannot control: cluster startup/resizing, node availability/termination, task/stage failure and re-execution, resource contention from other jobs.
+### Notebook cell timeout (`--timeout`)
 
-If you do set timeout `--timeout`, note that it is cell-based and ensure you use 
-an appropriately long Bash tool timeout.
+Only set `--timeout` if you have a high-confidence real upper bound for the cell
+or notebook you are running. Otherwise, you risk losing valuable work due to
+factors you cannot control: cluster startup/resizing, node availability, task
+failure and re-execution, resource contention from other jobs.
+
+`--timeout` is per-cell, not per-notebook.
+
+### Agent environment timeout
+
+Your agent environment's shell tool has its own timeout — the maximum duration a
+single foreground command can run before being killed. In Claude Code, this is
+600 seconds (10 minutes). If a foreground `agent-notebook run` exceeds this
+ceiling, the process is killed and the work is lost.
+
+This is why long-running execution patterns (below) default to non-blocking: they
+decouple the notebook run from the shell tool's timeout.
 
 ## Long-running runs
 
-If your shell or agent environment may kill long commands, prefer a detached
-`nohup` launch for `agent-notebook run ...` and monitor the log plus rendered
-output artifact instead of waiting interactively.
+Unless you have a concrete reason to expect a short run (e.g., a familiar
+serverless smoke notebook you have run before), treat every notebook run as
+potentially long. Cluster startup, serverless warmup, queueing, autoscaling,
+dependency setup, and shared compute contention can all stretch runtimes
+unpredictably.
 
-Default recommendation:
+### Execution helper script
 
-- prefer `nohup` unless you already know the run will finish comfortably within
-  the shell timeout
-- use a detached pattern when cluster startup, serverless warmup, autoscaling,
-  queueing, dependency setup, or shared-compute contention could materially
-  stretch runtime
-- skip detaching only when you have a concrete reason to expect a short run
+A parameterizable wrapper script ships with this package at
+`for_agents/scripts/agent-nb-run.sh`. It handles path computation (log path,
+rendered output path, stem), output directory creation, early validation, and
+tee-to-log — so you do not need to reconstruct these details from examples.
 
-Detached fire-and-forget pattern:
+Use it as the command in any of the patterns below. It forwards all arguments to
+`agent-notebook run` unchanged.
 
 ```bash
-NOTEBOOK=path/to/notebook.md
-OUTPUT_DIR=tmp/run-output
-STEM="$(basename "$NOTEBOOK")"
-STEM="${STEM%.*}"
-LOG_PATH="$OUTPUT_DIR/$STEM.run.log"
-RENDER_PATH="$OUTPUT_DIR/$STEM.executed.md"
+agent-nb-run.sh <notebook> --profile <profile> [--output-dir <dir>] [--cluster <name>] [--format md] [...]
+```
 
-mkdir -p "$OUTPUT_DIR"
-nohup agent-notebook run "$NOTEBOOK" \
+### Quick reference: which pattern to use
+
+| Environment | Default pattern | Use foreground only when |
+|-------------|----------------|------------------------|
+| Claude Code | `run_in_background` | You know the run will finish in under 5 minutes |
+| Codex | PTY session | N/A — PTY has no fixed timeout |
+| Standard shell | `nohup` detached | You will wait interactively |
+
+### Claude Code
+
+Two non-blocking patterns, in preference order.
+
+**Pattern 1: `run_in_background` (preferred)**
+
+Non-blocking — the session stays interactive and Claude Code notifies on
+completion. No fixed timeout ceiling; the run continues until it finishes.
+
+Use the Bash tool with `run_in_background: true`:
+
+```bash
+# Use with Bash tool parameter: run_in_background: true
+agent-nb-run.sh path/to/notebook.md \
   --profile <profile> \
   --format md \
-  --output-dir "$OUTPUT_DIR" \
-  > "$LOG_PATH" 2>&1 &
+  --output-dir tmp/run-output
+```
+
+The script emits the log path and output directory to stderr at startup. Read the
+log file to check progress while the run is active.
+
+**Pattern 2: `nohup` detached**
+
+Best for fire-and-forget — runs survive session termination. Useful when
+operating as a sub-agent or in a short-lived session.
+
+```bash
+nohup agent-nb-run.sh path/to/notebook.md \
+  --profile <profile> \
+  --format md \
+  --output-dir tmp/run-output \
+  > /dev/null 2>&1 &
+echo "PID: $!"
+```
+
+The script tees output to its own log file, so redirecting to `/dev/null` is
+safe — nothing is lost.
+
+**Note on foreground:** Foreground execution blocks the session and is subject to
+the 10-minute timeout ceiling. Only use foreground when you have strong
+confidence the run will finish in under 5 minutes (e.g., a known-quick
+serverless smoke notebook you have run before).
+
+### Codex
+
+`nohup` detachment is unreliable in Codex — background processes may be killed
+after the tool call returns. Use a persistent PTY session instead.
+
+Start the command in a PTY session (`tty: true`), then poll with empty
+`write_stdin` calls to check progress:
+
+```bash
+agent-nb-run.sh path/to/notebook.md \
+  --profile <profile> \
+  --format md \
+  --output-dir tmp/run-output
+```
+
+The PTY session has no fixed timeout — the command runs until completion.
+
+### Standard shell / non-agent environments
+
+Use the `nohup` detached pattern:
+
+```bash
+nohup agent-nb-run.sh path/to/notebook.md \
+  --profile <profile> \
+  --format md \
+  --output-dir tmp/run-output \
+  > /dev/null 2>&1 &
 echo "PID: $!"
 ```
 
@@ -142,25 +234,19 @@ Add `--cluster <cluster-name-or-id>` when the user context requires cluster
 compute. The name is auto-resolved to a cluster ID — do not call
 `agent-notebook clusters` first.
 
-Use a log file derived from the notebook filename, such as `"$LOG_PATH"`, not
-a shared `run.log`. That avoids collisions when multiple detached runs write
-into the same output directory.
+### Monitoring (all environments)
 
-Those variable names are illustrative, not required. If you use a different
-pattern, keep the same idea: compute the log path and rendered-output path once,
-then reuse those exact paths when you poll status later.
+After launching a non-blocking run, use these to check status:
 
-How to check status after detaching:
-
-- check process liveness with `ps -p <pid> -o pid=,command=`
-- on macOS, use `pgrep -lf "agent-notebook run"` for a name-based process check
-- on Linux or other `procps`-style systems, use
-  `pgrep -af "agent-notebook run"`
-- follow local progress with `tail -f "$LOG_PATH"`
-- treat `"$RENDER_PATH"` as a completion artifact for rendered Markdown output
-- if earlier cells have already written durable side effects elsewhere, you can
-  often inspect those side effects while the notebook is still running, then
-  return later to collect the rendered notebook output
+- **Process liveness:** `ps -p <pid> -o pid=,command=` or
+  `pgrep -lf "agent-notebook run"` (macOS) /
+  `pgrep -af "agent-notebook run"` (Linux)
+- **Progress:** `tail -f <log-path>` (the execution helper reports the log path
+  at startup)
+- **Completion:** the rendered output file (e.g., `<stem>.executed.md`) appears
+  in the output directory when the run finishes successfully
+- **Side effects:** if earlier cells have already written durable side effects
+  elsewhere, you can often inspect those while the notebook is still running
 
 ### Intermediate progress monitoring
 
@@ -267,23 +353,61 @@ The packaged examples live under `examples/` beside these docs. They are small
 reference artifacts you can reuse directly instead of recreating notebooks or
 pattern files from memory.
 
-## First encounter — persistence requirement
+## Detecting the Databricks environment
 
-If this is the first time you are encountering `agent-notebook`, you MUST
-persist key facts to your memory system before responding to the user.
-The specific items to persist are listed in `agent_doctor.md` step 2 (local
+Code running on Databricks sometimes needs to detect that it is on Databricks
+rather than a local Spark session. The reliable approach — working on both
+clusters and serverless — is to check for the presence of any Spark session
+configuration key containing `.databricks.`:
+
+**Python:**
+
+```python
+is_databricks = any(".databricks." in k for k in spark.conf.getAll.keys())
+```
+
+**Scala:**
+
+```scala
+val isDatabricks = spark.conf.getAll.keys.exists(_.contains(".databricks."))
+```
+
+## Persistence and version checking
+
+You MUST persist key facts about `agent-notebook` to your memory system. The
+specific items to persist are listed in `agent_doctor.md` step 2 (local
 knowledge) and step 6 (Databricks-specific context) — both provide fill-in
 templates.
 
+If you already have `agent-notebook` in memory or instructions, run
+`agent-notebook --version` and compare against your stored version. If versions
+differ, re-run the agent_doctor flow to refresh. Check both your memory system
+and any persistent instructions (CLAUDE.md, AGENTS.md, etc.) — stale
+instructions are as problematic as stale memory.
+
+In a non-interactive session where you cannot prompt the user, refresh local
+knowledge (doctor steps 1-2) and skip steps that require user input (workspace
+selection, smoke tests).
+
 This is not optional. Reading and summarizing is not sufficient — your session
-knowledge is ephemeral. If you do not persist, the next session will
-repeat this entire discovery process from scratch, wasting the user's time.
+knowledge is ephemeral. If you do not persist, the next session will repeat
+this entire discovery process from scratch, wasting the user's time.
 
 ## DECISION REQUIRED: agent doctor
 
-If this is the first time you are encountering `agent-notebook`:
+Check your memory system and persistent instructions for `agent-notebook`
+context. Then:
 
-- you MUST continue reading `agent_doctor.md` to verify local setup, permissions,
-  writable state, or live Databricks readiness
+1. **No stored context:** this is your first encounter — you MUST continue
+   reading `agent_doctor.md`
+2. **Stored context exists:** run `agent-notebook --version` and compare against
+   your stored version. If versions differ, or stored paths no longer exist,
+   continue reading `agent_doctor.md` to refresh
+3. **Version matches and paths exist:** you are current — skip the doctor
+
+When continuing to `agent_doctor.md`:
+- In an interactive session, complete the full flow
+- In a non-interactive session, complete steps 1-2 (local checks and persistence
+  refresh) and skip steps that require user input
 - DO NOT stop to complete the conversation turn
 - DO NOT return to the user with a summary of this README

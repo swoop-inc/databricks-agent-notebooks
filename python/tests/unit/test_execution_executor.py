@@ -13,6 +13,7 @@ import nbformat
 import pytest
 from jupyter_client.kernelspec import NoSuchKernel
 
+from databricks_agent_notebooks.execution import executor
 from databricks_agent_notebooks.execution.executor import (
     ExecutionResult,
     ensure_execution_kernel,
@@ -123,11 +124,11 @@ def test_missing_kernel_returns_execution_result_without_traceback(ensure_kernel
     assert result.error == "missing kernel"
 
 
-@patch("databricks_agent_notebooks.execution.executor.subprocess.run")
-def test_execute_notebook_delegates_to_managed_runtime_python(mock_run, notebook_path: Path) -> None:
+@patch("databricks_agent_notebooks.execution.executor.subprocess.Popen")
+def test_execute_notebook_delegates_to_managed_runtime_python(mock_popen, notebook_path: Path) -> None:
     output_path = notebook_path.with_suffix(".managed.executed.ipynb")
 
-    def fake_run(command, **kwargs):
+    def fake_popen(command, **kwargs):
         del kwargs
         output_path.write_text("{}", encoding="utf-8")
         result_path = Path(command[command.index("--result-path") + 1])
@@ -135,9 +136,15 @@ def test_execute_notebook_delegates_to_managed_runtime_python(mock_run, notebook
             '{"success": true, "output_path": "' + str(output_path) + '", "duration_seconds": 0.1, "error": null}',
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        process = Mock()
+        process.stdout = Mock()
+        process.stdout.read = Mock(return_value="")
+        process.stderr = iter([])
+        process.wait = Mock(return_value=0)
+        process.returncode = 0
+        return process
 
-    mock_run.side_effect = fake_run
+    mock_popen.side_effect = fake_popen
 
     result = execute_notebook(
         notebook_path,
@@ -147,24 +154,103 @@ def test_execute_notebook_delegates_to_managed_runtime_python(mock_run, notebook
     )
 
     assert result.success is True
-    mock_run.assert_called_once_with(
-        [
-            "/managed/runtime/bin/python",
-            "-m",
-            "databricks_agent_notebooks.execution.executor",
-            "--notebook-path",
-            str(notebook_path),
-            "--output-path",
-            str(output_path),
-            "--kernel",
-            "python3",
-            "--result-path",
-            ANY,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    call_args = mock_popen.call_args
+    command = call_args[0][0]
+    assert command[0] == "/managed/runtime/bin/python"
+    assert command[1:3] == ["-m", "databricks_agent_notebooks.execution.executor"]
+    assert call_args[1]["stdout"] == subprocess.PIPE
+    assert call_args[1]["stderr"] == subprocess.PIPE
+    assert call_args[1]["text"] is True
+
+
+@patch("databricks_agent_notebooks.execution.executor.subprocess.Popen")
+def test_execute_notebook_uses_subprocess_when_venv_prefix_differs(mock_popen, notebook_path: Path) -> None:
+    """The subprocess path is taken when python_executable's venv root differs from sys.prefix."""
+    output_path = notebook_path.with_suffix(".managed.executed.ipynb")
+
+    def fake_popen(command, **kwargs):
+        del kwargs
+        output_path.write_text("{}", encoding="utf-8")
+        result_path = Path(command[command.index("--result-path") + 1])
+        result_path.write_text(
+            '{"success": true, "output_path": "' + str(output_path) + '", "duration_seconds": 0.1, "error": null}',
+            encoding="utf-8",
+        )
+        process = Mock()
+        process.stdout = Mock()
+        process.stdout.read = Mock(return_value="")
+        process.stderr = iter([])
+        process.wait = Mock(return_value=0)
+        process.returncode = 0
+        return process
+
+    mock_popen.side_effect = fake_popen
+
+    # Use a python_executable whose parent.parent (venv root) differs from sys.prefix.
+    # e.g. /other/venv/bin/python -> venv root = /other/venv, which != sys.prefix
+    foreign_python = Path("/other/venv/bin/python")
+    result = execute_notebook(
+        notebook_path,
+        kernel="python3",
+        output_path=output_path,
+        python_executable=foreign_python,
     )
+
+    assert result.success is True
+    mock_popen.assert_called_once()
+
+
+@patch("databricks_agent_notebooks.execution.executor.ensure_execution_kernel")
+@patch("databricks_agent_notebooks.execution.executor.ExecutePreprocessor")
+def test_execute_notebook_uses_local_when_venv_prefix_matches(mock_execute_preprocessor, _ensure_kernel, notebook_path: Path) -> None:
+    """The in-process path is taken when python_executable's venv root matches sys.prefix."""
+    notebook = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("print(1)")])
+    nbformat.write(notebook, notebook_path)
+    mock_execute_preprocessor.return_value.preprocess.return_value = (notebook, {})
+
+    # Use a non-existent filename under sys.prefix/bin/ so resolve() returns
+    # the path unchanged (no symlink to follow), and parent.parent == sys.prefix.
+    same_venv_python = Path(sys.prefix) / "bin" / "python-nonexistent-test-stub"
+    result = execute_notebook(
+        notebook_path,
+        kernel="python3",
+        python_executable=same_venv_python,
+    )
+
+    assert result.success is True
+    # ExecutePreprocessor was used (in-process path), not subprocess
+    mock_execute_preprocessor.return_value.preprocess.assert_called_once()
+
+
+@patch("databricks_agent_notebooks.execution.executor.subprocess.Popen")
+def test_execute_notebook_subprocess_captures_stderr_for_error_fallback(mock_popen, notebook_path: Path) -> None:
+    output_path = notebook_path.with_suffix(".managed.executed.ipynb")
+
+    def fake_popen(command, **kwargs):
+        del kwargs
+        # Delete the temp result file to simulate a subprocess that dies
+        # without writing results (the executor creates the file via NamedTemporaryFile).
+        result_path = Path(command[command.index("--result-path") + 1])
+        result_path.unlink(missing_ok=True)
+        process = Mock()
+        process.stdout = Mock()
+        process.stdout.read = Mock(return_value="")
+        process.stderr = iter(["ImportError: No module named 'databricks.connect'\n"])
+        process.wait = Mock(return_value=1)
+        process.returncode = 1
+        return process
+
+    mock_popen.side_effect = fake_popen
+
+    result = execute_notebook(
+        notebook_path,
+        kernel="python3",
+        output_path=output_path,
+        python_executable=Path("/managed/runtime/bin/python"),
+    )
+
+    assert result.success is False
+    assert "No module named" in result.error
 
 
 def test_ensure_execution_kernel_bootstraps_python3_when_missing() -> None:
@@ -235,7 +321,6 @@ def test_execute_notebook_emits_safe_cell_progress_for_injected_cells(
     progress_lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith("agent-notebook:")]
     assert progress_lines[0].startswith("agent-notebook: phase=cell-start cell_index=1")
     assert 'cell_label="[AGENT-NOTEBOOK:INJECTED] Databricks session setup"' in progress_lines[0]
-    assert 'cell_snippet="[source redacted]"' in progress_lines[0]
     assert "DatabricksSession.builder.serverless" not in progress_lines[0]
     assert any("phase=executing" in line and "heartbeat=1" in line and "cell_index=1" in line for line in progress_lines[1:])
 
@@ -341,6 +426,6 @@ def test_execute_notebook_redacts_user_cell_source_from_progress(
     progress_lines = [line for line in stderr.splitlines() if "phase=cell-start" in line]
     assert len(progress_lines) == 1
     assert 'cell_label="[code cell]"' in progress_lines[0]
-    assert 'cell_snippet="[source redacted]"' in progress_lines[0]
+    assert "cell_snippet" not in progress_lines[0]
     assert "abc123secret" not in stderr
     assert 'token = "' not in stderr

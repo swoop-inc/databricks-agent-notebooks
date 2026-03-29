@@ -33,17 +33,32 @@ Interpretation:
 
 ## 2. Persist local knowledge
 
-You now have enough information to persist to memory. Do this NOW, before
-proceeding to Databricks probes — those may require user input, and agents
-frequently stop at interaction gates without persisting.
+If the README version check (above) already confirmed your stored version
+matches the installed version and stored paths exist, skip to step 3.
+
+Otherwise — whether this is a fresh install, a version mismatch, or missing
+memory — persist using the template below.
+
+The template below is the authoritative schema. Your stored memory and
+instructions are a cache. If you have existing agent-notebook context, compare
+each field below against your stored values: update changed values, add fields
+present here but missing, and remove fields you have that this template no
+longer includes. Check both your memory system and any persistent instructions
+(CLAUDE.md, AGENTS.md, etc.) — stale instructions are as problematic as stale
+memory.
+
+Do this NOW, before proceeding to Databricks probes — those may require user
+input, and agents frequently stop at interaction gates without persisting.
 
 Save a memory containing at minimum:
 
 - **Tool:** `agent-notebook` at `<which agent-notebook path>`
+- **Version:** `<output of agent-notebook --version>`
 - **Agent docs:** `<this directory's absolute path>`
+- **Execution helper:** `<absolute path to for_agents/scripts/agent-nb-run.sh>`
 - **Local readiness:** doctor check pass/fail per check, versions discovered (runtimes, kernel, Java)
 - **Scala support:** both cluster-backed and serverless; serverless defaults to Scala 2.13
-- **Operational pattern:** detached `nohup` execution for cluster-targeted runs
+- **Operational pattern:** non-blocking execution for cluster-targeted runs (see README for environment-specific pattern)
 
 Then proceed to step 3.
 
@@ -76,6 +91,12 @@ Interpretation:
   uses a 30-second cluster-listing timeout budget rather than waiting
   indefinitely for a slow workspace response. Note that listing clusters in
   large workspaces can generate more than a gigabyte of output.
+- On large workspaces, the 30-second timeout may expire before an exact cluster
+  name match is found during `run --cluster <name>`. When this happens, the
+  tool returns fuzzy name suggestions from partial results. Inspect these
+  suggestions — the full cluster name (e.g., `"rnd-alpha [engineering]"` instead
+  of `"rnd-alpha"`) usually resolves the issue. Passing a cluster ID instead of
+  a name is the deterministic path and is never subject to timeouts.
 - If networking or certificate failures appear only inside the agent sandbox,
   notify the user that the command likely needs a narrower unsandboxed path.
 
@@ -110,10 +131,13 @@ language, so you do not need to create new `.py` or `.scala` files first.
 
 ### Serverless Python
 
-This is the default Python smoke path because serverless should usually start quickly and have available resources for a quick notebook.
+This is the default Python smoke path because serverless should usually start
+quickly and have available resources for a quick notebook. If this is your first
+run or you are unsure of timing, use the long-running pattern from the README
+instead of foreground.
 
 ```bash
-agent-notebook run <installed-for_agents>/examples/smoke/python_select_one.md \
+agent-nb-run.sh <installed-for_agents>/examples/smoke/python_select_one.md \
   --profile <profile> \
   --output-dir <writable-output-root> \
   --format md
@@ -121,44 +145,45 @@ agent-notebook run <installed-for_agents>/examples/smoke/python_select_one.md \
 
 ### Cluster-targeted Python
 
-If the user requested cluster-targeted Python execution in step 4, use a detached run:
+If the user requested cluster-targeted Python execution in step 4, use a
+non-blocking run. Cluster startup can add minutes — always use your
+environment's long-running pattern (see the README "Long-running runs" section).
+
+Use the execution helper script (`for_agents/scripts/agent-nb-run.sh`) with your
+environment's non-blocking pattern. Example using `nohup` (Claude Code, standard
+shells):
 
 ```bash
-NOTEBOOK=<installed-for_agents>/examples/smoke/python_select_one.md
-OUTPUT_DIR=<writable-output-root>
-STEM="$(basename "$NOTEBOOK")"
-STEM="${STEM%.*}"
-
-mkdir -p "$OUTPUT_DIR"
-nohup agent-notebook run "$NOTEBOOK" \
+nohup agent-nb-run.sh \
+  <installed-for_agents>/examples/smoke/python_select_one.md \
   --profile <profile> \
   --cluster <cluster-name-or-id-from-strong-context-or-user> \
-  --output-dir "$OUTPUT_DIR" \
+  --output-dir <writable-output-root> \
   --format md \
-  > "$OUTPUT_DIR/$STEM.run.log" 2>&1 &
+  > /dev/null 2>&1 &
 echo "PID: $!"
 ```
+
+For Claude Code, `run_in_background: true` is preferred over `nohup`. For Codex,
+use a PTY session instead — `nohup` is unreliable in Codex.
 
 ### Scala
 
-If the user confirmed Scala notebook work in step 4, verify Scala execution:
+If the user confirmed Scala notebook work in step 4, verify Scala execution
+using the same non-blocking pattern as cluster-targeted Python:
 
 ```bash
-NOTEBOOK=<installed-for_agents>/examples/smoke/scala_select_one.md
-OUTPUT_DIR=<writable-output-root>
-STEM="$(basename "$NOTEBOOK")"
-STEM="${STEM%.*}"
-
-mkdir -p "$OUTPUT_DIR"
-nohup agent-notebook run "$NOTEBOOK" \
+nohup agent-nb-run.sh \
+  <installed-for_agents>/examples/smoke/scala_select_one.md \
   --profile <profile> \
   --cluster <cluster-name-or-id-from-strong-context-or-user> \
-  --no-inject-session \
-  --output-dir "$OUTPUT_DIR" \
+  --output-dir <writable-output-root> \
   --format md \
-  > "$OUTPUT_DIR/$STEM.run.log" 2>&1 &
+  > /dev/null 2>&1 &
 echo "PID: $!"
 ```
+
+For Claude Code, use `run_in_background: true`. For Codex, use a PTY session.
 
 ### Rules
 
@@ -174,7 +199,7 @@ Update your earlier memory to include:
 
 - **Profiles verified:** `<list profiles that passed smoke test>`
 - **Default compute:** `<serverless if available, else cluster name/id>`
-- **Detached execution needed:** `<yes/no, based on whether cluster compute is in use>`
+- **Non-blocking execution needed:** `<default yes; only skip for runs with predictably short duration such as known-quick serverless smoke notebooks or lightweight metadata queries>`
 - **Workspace constraints:** `<any discovered limitations>`
 - **Cluster name resolution:** cluster names can be passed directly to `--cluster`
   without calling `agent-notebook clusters` first — the `run` command auto-resolves names

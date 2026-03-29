@@ -1,0 +1,82 @@
+name: Integration Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  slow-integration:
+    # Kernel lifecycle, global install (no Spark, no Databricks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install coursier
+        run: |
+          curl -fL https://github.com/coursier/coursier/releases/download/v2.1.24/cs-x86_64-pc-linux.gz | gzip -d > /usr/local/bin/cs
+          chmod +x /usr/local/bin/cs
+      - name: Install package and test deps
+        run: cd python && uv pip install --system -e .[dev]
+      - name: Run slow integration tests
+        run: make test.integration.slow
+
+  databricks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Skipped when secrets are unavailable (e.g. fork PRs to upstream)
+    if: secrets.DATABRICKS_TOKEN != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install coursier
+        run: |
+          curl -fL https://github.com/coursier/coursier/releases/download/v2.1.24/cs-x86_64-pc-linux.gz | gzip -d > /usr/local/bin/cs
+          chmod +x /usr/local/bin/cs
+      - name: Install package and test deps
+        run: cd python && uv pip install --system -e .[dev]
+      - name: Install Scala kernel for serverless tests
+        run: cd python && uv run agent-notebook kernels install --sys-prefix --scala-version 2.13
+      - name: Run Databricks integration tests
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: make test.integration.databricks
+
+  local-spark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pyspark-version: ["3.5.5", "4.0.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install package, test deps, and PySpark
+        run: |
+          cd python && uv pip install --system -e .[dev]
+          uv pip install --system pyspark==${{ matrix.pyspark-version }}
+      - name: Run local Spark tests
+        run: make test.integration.spark

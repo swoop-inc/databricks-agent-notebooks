@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from databricks_agent_notebooks.runtime.connect import (
     ConnectRuntimeSpec,
     SERVERLESS_CONNECT_OVERRIDE_ENV_VAR,
@@ -161,6 +163,43 @@ def test_materialize_managed_runtime_repairs_partial_runtime_without_receipt(tmp
     ]
 
 
+def test_materialize_managed_runtime_installs_packages_when_receipt_exists_but_venv_is_new(tmp_path: Path) -> None:
+    home = _make_runtime_home(tmp_path / "runtime-home")
+    spec = ConnectRuntimeSpec.for_cluster(databricks_line="16.4.x-scala2.12", python_line="3.12")
+    # Simulate what 'kernels install' does: write a receipt without creating a venv.
+    materialize_runtime_installation(home, databricks_line=spec.databricks_line, python_line=spec.python_line)
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], *, check: bool) -> None:
+        commands.append(command)
+        if command[:3] == [sys.executable, "-m", "venv"]:
+            runtime_python = home.runtimes_dir / spec.runtime_id / "venv" / "bin" / "python"
+            runtime_python.parent.mkdir(parents=True, exist_ok=True)
+            runtime_python.write_text("", encoding="utf-8")
+
+    runtime = materialize_managed_runtime(
+        home,
+        spec=spec,
+        subprocess_run=fake_run,
+        package_install_target=["-e", "/tmp/repo/python"],
+    )
+
+    assert runtime.runtime_id == "dbr-16.4-python-3.12"
+    assert commands == [
+        [sys.executable, "-m", "venv", str(home.runtimes_dir / spec.runtime_id / "venv")],
+        [str(runtime.python_executable), "-m", "pip", "install", "--upgrade", "pip"],
+        [
+            str(runtime.python_executable),
+            "-m",
+            "pip",
+            "install",
+            "-e",
+            "/tmp/repo/python",
+            "databricks-connect==16.4.*",
+        ],
+    ]
+
+
 def test_ensure_serverless_runtime_uses_conservative_default_and_caches_workspace_profile_success(tmp_path: Path) -> None:
     home = _make_runtime_home(tmp_path / "runtime-home")
     cfg = _write_databricks_cfg(tmp_path, profile="prod", host="https://workspace.example")
@@ -209,7 +248,7 @@ def test_ensure_serverless_runtime_uses_conservative_default_and_caches_workspac
     }
 
 
-def test_ensure_serverless_runtime_falls_back_to_older_supported_line_when_validation_fails(tmp_path: Path) -> None:
+def test_ensure_serverless_runtime_raises_when_only_candidate_fails_validation(tmp_path: Path) -> None:
     home = _make_runtime_home(tmp_path / "runtime-home")
     cfg = _write_databricks_cfg(tmp_path, profile="prod", host="https://workspace.example")
     materialized: list[str] = []
@@ -236,20 +275,19 @@ def test_ensure_serverless_runtime_falls_back_to_older_supported_line_when_valid
     def fake_validate(runtime, *, profile: str | None, subprocess_run) -> None:
         del profile, subprocess_run
         validated.append(runtime.connect_line)
-        if runtime.connect_line == "16.4":
-            raise ServerlessRuntimeValidationError("16.4 is incompatible")
+        raise ServerlessRuntimeValidationError(f"{runtime.connect_line} is incompatible")
 
-    runtime = ensure_serverless_runtime(
-        profile="prod",
-        home=home,
-        environ={"DATABRICKS_CONFIG_FILE": str(cfg)},
-        materialize_runtime=fake_materialize,
-        validate_runtime=fake_validate,
-    )
+    with pytest.raises(RuntimeError, match="unable to validate a serverless Databricks Connect runtime"):
+        ensure_serverless_runtime(
+            profile="prod",
+            home=home,
+            environ={"DATABRICKS_CONFIG_FILE": str(cfg)},
+            materialize_runtime=fake_materialize,
+            validate_runtime=fake_validate,
+        )
 
-    assert runtime.connect_line == "15.4"
-    assert materialized == ["16.4", "15.4"]
-    assert validated == ["16.4", "15.4"]
+    assert materialized == ["16.4"]
+    assert validated == ["16.4"]
 
 
 def test_ensure_serverless_runtime_reuses_cached_workspace_profile_line_without_revalidation(tmp_path: Path) -> None:

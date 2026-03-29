@@ -310,7 +310,7 @@ wheels = [
 
 [[package]]
 name = "databricks-agent-notebooks"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "databricks-sdk" },
@@ -825,16 +825,16 @@ wheels = [
 [[package]]
 name = "nbformat-swoop"
 version = "5.10.4.post1"
-source = { registry = "../../nbformat/dist" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastjsonschema" },
     { name = "jsonschema" },
     { name = "jupyter-core" },
     { name = "traitlets" },
 ]
-sdist = { path = "nbformat_swoop-5.10.4.post1.tar.gz" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/1b/a689272e3220b2f1da6dae44e8134c0c620933a7148f53217cce4ff8559b/nbformat_swoop-5.10.4.post1.tar.gz", hash = "sha256:1c888a025e8a1e8a34a309a1b19b55cf4f9accbe5f7cf33dbd833a2250d7832a", size = 143670, upload-time = "2026-03-26T06:27:25.8Z" }
 wheels = [
-    { path = "nbformat_swoop-5.10.4.post1-py3-none-any.whl" },
+    { url = "https://files.pythonhosted.org/packages/31/7a/5af714c33826f47555f977068ece08a6ccb40dac615d7ee309c8566f7c3d/nbformat_swoop-5.10.4.post1-py3-none-any.whl", hash = "sha256:49fd0bd134bcc4175ab550eb6f1416353be8073a923274a9120f13cec8a4e262", size = 78728, upload-time = "2026-03-26T06:27:24.91Z" },
 ]
 
 [[package]]

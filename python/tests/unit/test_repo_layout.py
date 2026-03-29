@@ -212,9 +212,11 @@ def test_release_docs_only_claim_verified_local_offline_scope() -> None:
     assert "agent-notebook kernels doctor --help" not in readme
     assert "agent-notebook runtimes doctor --help" not in readme
     assert "# Agent Notebook Guide" in agent_readme
-    assert "nohup agent-notebook run" in agent_readme
-    assert 'LOG_PATH="$OUTPUT_DIR/$STEM.run.log"' in agent_readme
-    assert 'RENDER_PATH="$OUTPUT_DIR/$STEM.executed.md"' in agent_readme
+    # Script-level path assertions check the execution helper, not the README
+    run_script = read_text(
+        REPO_ROOT / "python" / "src" / "databricks_agent_notebooks" / "for_agents" / "scripts" / "agent-nb-run.sh"
+    )
+    assert 'LOG_PATH="$OUTPUT_DIR/$STEM.run.log"' in run_script
     assert "~/.ipython" in agent_readme
     assert 'pgrep -lf "agent-notebook run"' in agent_readme
     assert 'pgrep -af "agent-notebook run"' in agent_readme
