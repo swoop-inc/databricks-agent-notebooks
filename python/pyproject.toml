@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "databricks-agent-notebooks"
-version = "0.2.3"
+version = "0.3.0"
 description = "Standalone notebook conversion and local runtime tooling for the databricks-agent-notebooks repository."
 readme = "README.md"
 requires-python = ">=3.11"
