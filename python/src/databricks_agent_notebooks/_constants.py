@@ -103,3 +103,12 @@ def scala_variant_for_dbr(major: int) -> ScalaVariant:
     if major >= 17:
         return SCALA_213
     return SCALA_212
+
+
+# ---------------------------------------------------------------------------
+# LOCAL_SPARK — reserved profile for local PySpark / vanilla Spark execution
+# ---------------------------------------------------------------------------
+
+LOCAL_SPARK_PROFILE = "LOCAL_SPARK"
+LOCAL_SPARK_DEFAULT_MASTER = "local[*]"
+LOCAL_SPARK_DEFAULT_VERSION = "3.5.4"

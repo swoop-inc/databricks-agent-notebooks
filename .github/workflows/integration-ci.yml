@@ -80,3 +80,37 @@ jobs:
           uv pip install --system pyspark==${{ matrix.pyspark-version }}
       - name: Run local Spark tests
         run: make test.integration.spark
+
+  local-spark-scala:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - spark-version: "3.5.4"
+            scala-version: "2.12"
+          - spark-version: "4.0.0"
+            scala-version: "2.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install coursier
+        run: |
+          curl -fL https://github.com/coursier/coursier/releases/download/v2.1.24/cs-x86_64-pc-linux.gz | gzip -d > /usr/local/bin/cs
+          chmod +x /usr/local/bin/cs
+      - name: Install package and test deps
+        run: cd python && uv pip install --system -e .[dev]
+      - name: Install Scala kernel
+        run: cd python && uv run agent-notebook kernels install --sys-prefix --scala-version ${{ matrix.scala-version }}
+      - name: Run Scala local Spark tests
+        env:
+          AGENT_NOTEBOOK_LOCAL_SPARK_VERSION: ${{ matrix.spark-version }}
+        run: make test.integration.spark.scala

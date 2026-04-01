@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import nbformat
+import pytest
 
 from databricks_agent_notebooks.config.frontmatter import DatabricksConfig
 from databricks_agent_notebooks.execution.injection import (
@@ -183,3 +184,160 @@ def test_python_injection_ignores_scala_connect_version() -> None:
     )
     assert "import $ivy" not in code
     assert "15.4.6" not in code
+
+
+# ---------------------------------------------------------------------------
+# LOCAL_SPARK injection
+# ---------------------------------------------------------------------------
+
+
+def test_local_spark_python_default() -> None:
+    """Default local Python generates SparkSession with local[*]."""
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="python",
+        local_spark=True,
+    )
+    assert "from pyspark.sql import SparkSession" in code
+    assert 'master("local[*]")' in code
+    assert '.appName("agent-notebook")' in code
+    assert ".getOrCreate()" in code
+    assert "[AGENT-NOTEBOOK:INJECTED]" in code
+    assert "Local Spark: local[*]" in code
+
+
+def test_local_spark_python_custom_master(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """Custom master via env var."""
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_MASTER", "local[4]")
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="python",
+        local_spark=True,
+    )
+    assert 'master("local[4]")' in code
+    assert "Local Spark: local[4]" in code
+
+
+def test_local_spark_python_with_memory(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """Driver and executor memory are included when env vars are set."""
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY", "2g")
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY", "4g")
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="python",
+        local_spark=True,
+    )
+    assert '.config("spark.driver.memory", "2g")' in code
+    assert '.config("spark.executor.memory", "4g")' in code
+
+
+def test_local_spark_python_omits_memory_when_unset() -> None:
+    """No memory config calls when env vars are absent."""
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="python",
+        local_spark=True,
+    )
+    assert "spark.driver.memory" not in code
+    assert "spark.executor.memory" not in code
+
+
+def test_local_spark_scala_default() -> None:
+    """Default local Scala generates $ivy import + SparkSession."""
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="scala",
+        local_spark=True,
+    )
+    assert "import $ivy.`org.apache.spark::spark-sql:3.5.4`" in code
+    assert "import org.apache.spark.sql.SparkSession" in code
+    assert '.master("local[*]")' in code
+    assert '.appName("agent-notebook")' in code
+    assert ".getOrCreate()" in code
+    assert 'setLogLevel("WARN")' in code
+    assert "Local Spark: local[*] (3.5.4)" in code
+
+
+def test_local_spark_scala_custom_version(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """Custom Spark version for Scala via env var."""
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_VERSION", "3.4.2")
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="scala",
+        local_spark=True,
+    )
+    assert "import $ivy.`org.apache.spark::spark-sql:3.4.2`" in code
+    assert "Local Spark: local[*] (3.4.2)" in code
+
+
+def test_local_spark_no_databricks_imports() -> None:
+    """Neither local generator references DatabricksSession or DatabricksConfig."""
+    for lang in ("python", "scala"):
+        code = generate_setup_code(
+            DatabricksConfig(profile="LOCAL_SPARK"),
+            _make_lineage(),
+            language=lang,
+            local_spark=True,
+        )
+        assert "DatabricksSession" not in code
+        assert "DatabricksConfig" not in code
+        assert "databricks.connect" not in code
+
+
+@patch("databricks_agent_notebooks.execution.injection.capture_pre_execution")
+def test_inject_cells_local_spark_produces_pyspark_import(mock_capture) -> None:
+    """inject_cells threads local_spark=True to the Python local generator."""
+    mock_capture.return_value = _make_lineage()
+    notebook = _make_notebook(language="python")
+    config = DatabricksConfig(profile="LOCAL_SPARK")
+
+    inject_cells(notebook, config, local_spark=True)
+
+    code = notebook.cells[0].source
+    assert "from pyspark.sql import SparkSession" in code
+    assert "DatabricksSession" not in code
+    assert is_injected_cell(notebook.cells[0]) is True
+
+
+@patch("databricks_agent_notebooks.execution.injection.capture_pre_execution")
+def test_inject_cells_local_spark_scala(mock_capture) -> None:
+    """inject_cells threads local_spark=True to the Scala local generator."""
+    mock_capture.return_value = _make_lineage()
+    notebook = _make_notebook(language="scala")
+    config = DatabricksConfig(profile="LOCAL_SPARK")
+
+    inject_cells(notebook, config, local_spark=True)
+
+    code = notebook.cells[0].source
+    assert "org.apache.spark" in code
+    assert "DatabricksSession" not in code
+    assert is_injected_cell(notebook.cells[0]) is True
+
+
+def test_local_spark_sql_routes_to_python() -> None:
+    """language='sql' routes to the Python local generator in local_spark mode."""
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="sql",
+        local_spark=True,
+    )
+    assert "from pyspark.sql import SparkSession" in code
+
+
+def test_scala_local_setup_omits_executor_memory(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """Scala local generator must not emit spark.executor.memory even when env var is set."""
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY", "2g")
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="scala",
+        local_spark=True,
+    )
+    assert "executor.memory" not in code

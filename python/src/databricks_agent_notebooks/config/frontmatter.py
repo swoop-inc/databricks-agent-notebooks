@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from databricks_agent_notebooks._constants import LOCAL_SPARK_PROFILE
+
 
 @dataclass(frozen=True)
 class DatabricksConfig:
@@ -82,3 +84,12 @@ def merge_config(
         cluster=cli_cluster if cli_cluster is not None else frontmatter.cluster,
         language=cli_language if cli_language is not None else frontmatter.language,
     )
+
+
+def is_local_spark(config: DatabricksConfig) -> bool:
+    """Detect whether *config* specifies the reserved LOCAL_SPARK profile.
+
+    Case-insensitive: ``local_spark``, ``Local_Spark``, ``LOCAL_SPARK``
+    all match.
+    """
+    return config.profile is not None and config.profile.upper() == LOCAL_SPARK_PROFILE

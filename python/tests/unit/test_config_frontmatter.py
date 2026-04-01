@@ -6,6 +6,7 @@ from pathlib import Path
 
 from databricks_agent_notebooks.config.frontmatter import (
     DatabricksConfig,
+    is_local_spark,
     merge_config,
     parse_frontmatter,
 )
@@ -56,3 +57,28 @@ def test_frontmatter_used_when_cli_is_none() -> None:
     assert merged.profile == "file-profile"
     assert merged.cluster == "file-cluster"
     assert merged.language == "scala"
+
+
+# ---------------------------------------------------------------------------
+# is_local_spark
+# ---------------------------------------------------------------------------
+
+
+def test_is_local_spark_true() -> None:
+    assert is_local_spark(DatabricksConfig(profile="LOCAL_SPARK")) is True
+
+
+def test_is_local_spark_case_insensitive() -> None:
+    assert is_local_spark(DatabricksConfig(profile="local_spark")) is True
+    assert is_local_spark(DatabricksConfig(profile="Local_Spark")) is True
+    assert is_local_spark(DatabricksConfig(profile="LOCAL_spark")) is True
+
+
+def test_is_local_spark_false_for_regular_profile() -> None:
+    assert is_local_spark(DatabricksConfig(profile="dev")) is False
+    assert is_local_spark(DatabricksConfig(profile="nonhealth-prod")) is False
+
+
+def test_is_local_spark_false_for_none() -> None:
+    assert is_local_spark(DatabricksConfig()) is False
+    assert is_local_spark(DatabricksConfig(profile=None)) is False

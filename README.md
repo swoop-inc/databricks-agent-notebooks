@@ -81,6 +81,23 @@ spark.sql("SELECT 1").show()
 ```
 ````
 
+Local Spark notebooks skip Databricks entirely — useful for CI, testing, and development without credentials:
+
+````markdown
+---
+databricks:
+  language: python
+  profile: LOCAL_SPARK
+---
+
+# Local test
+
+```python
+result = spark.range(10).count()
+print(f"count={result}")
+```
+````
+
 CLI flags (`--profile`, `--cluster`, `--language`) override frontmatter values. When frontmatter is not provided, these values must be passed explicitly on the `run` command.
 
 Each markdown notebook must use a single language — you cannot mix Python and Scala cells the way you can in a Databricks workspace notebook, because execution runs through Databricks Connect rather than a workspace interpreter.
@@ -108,6 +125,9 @@ agent-notebook run path/to/notebook.md
 
 # with a specific profile and cluster
 agent-notebook run path/to/notebook.md --profile <profile_name> --cluster <cluster-name-or-id>
+
+# local execution — no Databricks credentials needed
+agent-notebook run path/to/notebook.md --profile LOCAL_SPARK
 ```
 
 Output files are written to `path/to/notebook_output/`: 
@@ -126,6 +146,28 @@ Use `--output-dir` to change the parent directory, or `--format md` / `--format 
 - A cluster name will be resolved to a cluster ID in a best-effort manner, within a 30 second timeout window. In case of no resolution, helpful fuzzy matches will be returned to help with typos.
 - `--no-inject-session` bypasses managed Databricks Connect runtime selection and session injection for both cluster-backed and serverless runs when your notebook handles its own Spark session
 - For Python serverless execution, the policy tries a conservative version first, validates it, falls back to older supported lines if needed, and caches the first workspace/profile success under runtime-home for reuse. `DATABRICKS_AGENT_NOTEBOOKS_SERVERLESS_CONNECT_LINE` is a Python-only escape hatch for forcing an explicit serverless Connect line in the unlikely event you need to override the cached/default policy.
+
+### Local Execution
+
+`--profile LOCAL_SPARK` runs notebooks against a local Spark session with no Databricks credentials needed.
+
+- `--profile LOCAL_SPARK --cluster foo` is an error — the two are mutually exclusive
+- `SPARK_HOME` is not needed — Scala uses `$ivy` imports (self-contained). Python requires pyspark installed in the active Python environment (`pip install pyspark` or `uv pip install pyspark`)
+
+`--no-inject-session` is a separate concern: it skips session injection entirely so the notebook can manage its own Spark session. It can be combined with `--profile LOCAL_SPARK` if you want local execution without the injected session.
+
+Environment variables for tuning (all optional):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENT_NOTEBOOK_LOCAL_SPARK_MASTER` | `local[*]` | Spark master URL |
+| `AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY` | _(Spark default)_ | Driver memory, e.g., `2g` |
+| `AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY` | _(Spark default)_ | e.g., `2g` — Python only (see Scala restrictions below) |
+| `AGENT_NOTEBOOK_LOCAL_SPARK_VERSION` | `3.5.4` | Scala only (Python uses pip-installed PySpark); Spark version for `$ivy` import |
+
+> **Scala:** The CLI validates master URLs and memory configuration at startup.
+> See [Scala local mode restrictions](python/src/databricks_agent_notebooks/for_agents/scala_development.md#local-mode-restrictions)
+> for details.
 
 ## Deeper Documentation
 

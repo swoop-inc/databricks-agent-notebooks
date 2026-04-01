@@ -1,5 +1,9 @@
-.PHONY: test test.unit test.integration.fast test.integration.slow test.integration.spark \
-        test.integration.databricks test.all help
+.PHONY: install test test.unit test.integration.fast test.integration.slow test.integration.spark \
+        test.integration.spark.scala test.integration.databricks test.all help
+
+## Install globally from this worktree (always rebuilds from source)
+install:
+	uv tool install --force --reinstall --from python databricks-agent-notebooks
 
 ## Default: unit + fast integration (no side effects, no downloads)
 test:
@@ -22,7 +26,12 @@ test.integration.slow:
 ## Local Spark: notebook execution with local PySpark (requires pyspark installed)
 ## Agents: run outside sandbox (dangerouslyDisableSandbox) — executes notebooks via agent-notebook run
 test.integration.spark:
-	cd python && uv run --extra dev pytest tests/integration -m spark
+	cd python && uv run --extra dev pytest tests/integration -m "spark and not scala"
+
+## Scala local Spark: Scala notebook execution with local Spark via $ivy (requires Java, coursier, Almond kernel)
+## Agents: run outside sandbox (dangerouslyDisableSandbox) — executes notebooks via agent-notebook run
+test.integration.spark.scala:
+	cd python && uv run --extra dev pytest tests/integration -m "spark and scala"
 
 ## Live Databricks: notebook execution against real workspace (requires credentials)
 ## Locally: uses DEFAULT profile. CI: uses DATABRICKS_HOST/DATABRICKS_TOKEN secrets.

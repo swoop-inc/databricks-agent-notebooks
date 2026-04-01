@@ -8,6 +8,7 @@ same argparse/subparsers/dispatch-table pattern as ``libs.continuum.cli``.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -16,7 +17,7 @@ from importlib import resources
 from pathlib import Path
 
 from databricks_agent_notebooks import __version__
-from databricks_agent_notebooks.config.frontmatter import DatabricksConfig, merge_config
+from databricks_agent_notebooks.config.frontmatter import DatabricksConfig, is_local_spark, merge_config
 from databricks_agent_notebooks.execution.executor import RawProgressValue, emit_progress_signal, execute_notebook
 from databricks_agent_notebooks.execution.injection import inject_cells
 from databricks_agent_notebooks.execution.rendering import render
@@ -24,7 +25,14 @@ from databricks_agent_notebooks.formats.conversion import to_notebook, validate_
 from databricks_agent_notebooks.integrations.databricks.clusters import ClusterError, default_service
 from databricks_agent_notebooks.runtime.connect import ensure_cluster_runtime, ensure_serverless_runtime
 from databricks_agent_notebooks.runtime.home import resolve_runtime_home
-from databricks_agent_notebooks._constants import DEFAULT_SCALA_VARIANT, SCALA_212, SCALA_VARIANTS
+import os
+
+from databricks_agent_notebooks._constants import (
+    DEFAULT_SCALA_VARIANT,
+    LOCAL_SPARK_DEFAULT_VERSION,
+    SCALA_212,
+    SCALA_VARIANTS,
+)
 from databricks_agent_notebooks.runtime.scala_connect import prefetch_scala_connect, resolve_scala_connect
 from databricks_agent_notebooks.runtime.doctor import Check, doctor_scala_connect_readiness, run_checks
 from databricks_agent_notebooks.runtime.inventory import doctor_installed_runtimes, list_installed_runtimes
@@ -39,6 +47,30 @@ from databricks_agent_notebooks.runtime.kernel import (
 )
 
 import nbformat
+
+_VALID_SCALA_LOCAL_MASTER_RE = re.compile(r"^local(\[(\*|\d+)(,\d+)?\])?$")
+
+
+def _validate_scala_local_spark(master: str, executor_memory: str | None) -> str | None:
+    """Validate LOCAL_SPARK configuration for Scala notebooks.
+
+    Returns an error message string if validation fails, or None if valid.
+    """
+    if not _VALID_SCALA_LOCAL_MASTER_RE.match(master):
+        return (
+            f"error: Spark master URL '{master}' is not supported for Scala notebooks. "
+            "Scala LOCAL_SPARK only supports local[*], local[N], local[N,M], or local. "
+            "The local-cluster mode is incompatible with the Almond kernel's classloader "
+            "(ClassNotFoundException in executors). "
+            "Use local[N] for parallelism control instead."
+        )
+    if executor_memory:
+        return (
+            "error: AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY is not supported for Scala notebooks. "
+            "In local mode there are no separate executor processes — the driver IS the executor. "
+            "Use AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY to control the total JVM heap size instead."
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +244,85 @@ def _cmd_run(args: argparse.Namespace) -> int:
     language = _resolve_execution_language(notebook, config)
     inject_session = not args.no_inject_session
 
+    # Step 2b: LOCAL_SPARK validation and branching
+    local_spark = is_local_spark(config)
+    if local_spark and config.cluster:
+        print("error: --profile LOCAL_SPARK and --cluster are mutually exclusive", file=sys.stderr)
+        return 1
+
     # Step 3: Resolve cluster
     cluster = None
-    if config.cluster and inject_session:
+    if local_spark and inject_session:
+        emit_progress_signal("compute", mode=RawProgressValue("local-spark"))
+        # Pre-flight: verify pyspark is importable for Python LOCAL_SPARK
+        if language != "scala":
+            try:
+                import pyspark  # noqa: F401, PLC0415
+            except ImportError:
+                print(
+                    "error: pyspark is required for Python LOCAL_SPARK but not importable. "
+                    "Install it with: pip install pyspark (or uv pip install pyspark)",
+                    file=sys.stderr,
+                )
+                return 1
+        # Validate and set up Scala LOCAL_SPARK
+        if language == "scala":
+            local_spark_master = os.environ.get("AGENT_NOTEBOOK_LOCAL_SPARK_MASTER", "local[*]")
+            executor_memory = os.environ.get("AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY")
+            validation_error = _validate_scala_local_spark(local_spark_master, executor_memory)
+            if validation_error:
+                print(validation_error, file=sys.stderr)
+                return 1
+            spark_ver = os.environ.get(
+                "AGENT_NOTEBOOK_LOCAL_SPARK_VERSION", LOCAL_SPARK_DEFAULT_VERSION,
+            )
+            scala_variant = SCALA_VARIANTS.get(
+                "2.13" if spark_ver.startswith("4.") else "2.12", SCALA_212,
+            )
+            notebook.metadata["kernelspec"] = {
+                "name": scala_variant.kernel_id,
+                "display_name": scala_variant.kernel_display_name,
+                "language": "scala",
+            }
+            # Spark 3.x on Java 17+ needs --add-opens for the Almond kernel JVM.
+            # PySpark handles this in its own launcher; for Scala we propagate via
+            # JDK_JAVA_OPTIONS (standard since Java 9). Unlike JAVA_TOOL_OPTIONS,
+            # JDK_JAVA_OPTIONS does not print "Picked up ..." to stderr.
+            existing_jdk = os.environ.get("JDK_JAVA_OPTIONS", "")
+            existing_jto = os.environ.get("JAVA_TOOL_OPTIONS", "")
+            if spark_ver.startswith("3.") and "--add-opens" not in existing_jdk and "--add-opens" not in existing_jto:
+                _opens = (
+                    "--add-opens=java.base/java.lang=ALL-UNNAMED "
+                    "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED "
+                    "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED "
+                    "--add-opens=java.base/java.io=ALL-UNNAMED "
+                    "--add-opens=java.base/java.net=ALL-UNNAMED "
+                    "--add-opens=java.base/java.nio=ALL-UNNAMED "
+                    "--add-opens=java.base/java.util=ALL-UNNAMED "
+                    "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED "
+                    "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED "
+                    "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED "
+                    "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED "
+                    "--add-opens=java.base/sun.security.action=ALL-UNNAMED "
+                    "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED "
+                    "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
+                )
+                os.environ["JDK_JAVA_OPTIONS"] = f"{existing_jdk} {_opens}".strip()
+            # Inject driver memory as -Xmx into JDK_JAVA_OPTIONS for Scala.
+            # The SparkConf injection (in injection.py) generates
+            # spark.driver.memory but that is decorative for Scala — the JVM
+            # is already running by the time SparkSession.builder reads it.
+            existing_jdk = os.environ.get("JDK_JAVA_OPTIONS", "")
+            driver_memory = os.environ.get("AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY")
+            if driver_memory and "-Xmx" not in existing_jdk and "-Xmx" not in existing_jto:
+                os.environ["JDK_JAVA_OPTIONS"] = f"{existing_jdk} -Xmx{driver_memory}".strip()
+                print(
+                    f"warning: In local mode, spark.driver.memory controls the total JVM heap "
+                    f"shared by driver and all task threads — there are no separate executor "
+                    f"processes. -Xmx{driver_memory} has been set on the JVM.",
+                    file=sys.stderr,
+                )
+    elif config.cluster and inject_session:
         service = default_service()
         try:
             effective_profile = config.profile or "DEFAULT"
@@ -229,7 +337,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             emit_progress_signal("failed", error=str(exc))
             print(f"error: {exc}", file=sys.stderr)
             return 1
-    elif not config.cluster:
+    elif not config.cluster and not local_spark:
         emit_progress_signal("compute", mode=RawProgressValue("serverless"))
 
     managed_python_executable = None
@@ -257,7 +365,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 "display_name": scala_variant.kernel_display_name,
                 "language": "scala",
             }
-    elif cluster is None and inject_session and language == "python":
+    elif cluster is None and inject_session and not local_spark and language == "python":
         try:
             managed_runtime = ensure_serverless_runtime(
                 profile=config.profile,
@@ -268,7 +376,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         managed_python_executable = managed_runtime.python_executable
-    elif cluster is None and inject_session and language == "scala":
+    elif cluster is None and inject_session and not local_spark and language == "scala":
         scala_variant = DEFAULT_SCALA_VARIANT
         notebook.metadata["kernelspec"] = {
             "name": scala_variant.kernel_id,
@@ -280,6 +388,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if inject_session:
         notebook = inject_cells(
             notebook, config, input_path,
+            local_spark=local_spark,
             scala_connect_version=scala_connect_version,
             scala_variant=scala_variant,
         )

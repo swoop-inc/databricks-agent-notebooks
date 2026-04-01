@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import builtins
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from databricks_agent_notebooks.cli import _build_parser, main
+from databricks_agent_notebooks.cli import _build_parser, _validate_scala_local_spark, main
 from databricks_agent_notebooks.config.frontmatter import DatabricksConfig
 from databricks_agent_notebooks.integrations.databricks.clusters import Cluster, ClusterError
 from databricks_agent_notebooks._constants import SCALA_212, SCALA_213
@@ -443,6 +446,7 @@ def test_run_cluster_without_explicit_profile_persists_default_profile_for_injec
         notebook,
         DatabricksConfig(profile="DEFAULT", cluster="abc-123", language="python"),
         input_file.resolve(),
+        local_spark=False,
         scala_connect_version=None,
         scala_variant=None,
     )
@@ -797,3 +801,436 @@ def test_nested_doctor_commands_are_not_available(argv: list[str], capsys) -> No
     error_output = capsys.readouterr().err
     assert "invalid choice" in error_output
     assert "doctor" in error_output
+
+
+def test_run_python_local_spark_fails_fast_when_pyspark_missing(tmp_path: Path, capsys) -> None:
+    """Python LOCAL_SPARK pre-flight: error with actionable message when pyspark is absent."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+
+    original_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "pyspark":
+            raise ImportError("No module named 'pyspark'")
+        return original_import(name, *args, **kwargs)
+
+    # Ensure pyspark is not cached in sys.modules (otherwise import bypasses __import__ mock)
+    _saved = {k: sys.modules.pop(k) for k in [k for k in sys.modules if k == "pyspark" or k.startswith("pyspark.")]}
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="python"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch("builtins.__import__", side_effect=mock_import),
+    ):
+        result = main(["run", str(input_file)])
+    sys.modules.update(_saved)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "pyspark is required for Python LOCAL_SPARK" in captured.err
+    assert "pip install pyspark" in captured.err
+
+
+def test_run_python_local_spark_fails_fast_when_pyspark_broken(tmp_path: Path, capsys) -> None:
+    """Python LOCAL_SPARK pre-flight: error when pyspark exists but can't be imported."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+
+    original_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "pyspark":
+            raise ImportError("stump directory, no real package")
+        return original_import(name, *args, **kwargs)
+
+    # Ensure pyspark is not cached in sys.modules (otherwise import bypasses __import__ mock)
+    _saved = {k: sys.modules.pop(k) for k in [k for k in sys.modules if k == "pyspark" or k.startswith("pyspark.")]}
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="python"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch("builtins.__import__", side_effect=mock_import),
+    ):
+        result = main(["run", str(input_file)])
+    sys.modules.update(_saved)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "pyspark is required for Python LOCAL_SPARK" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# LOCAL_SPARK: Scala driver memory via JDK_JAVA_OPTIONS
+# ---------------------------------------------------------------------------
+
+
+def test_run_scala_local_spark_injects_xmx_into_jdk_java_options(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY=4g should produce -Xmx4g in JDK_JAVA_OPTIONS for Scala."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```scala\nval x = 1\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "scala212-dbr-connect", "language": "scala"}}
+
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY", "4g")
+    # Clear JDK_JAVA_OPTIONS to isolate the test
+    monkeypatch.delenv("JDK_JAVA_OPTIONS", raising=False)
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        main(["run", str(input_file)])
+
+    jdk_opts = os.environ.get("JDK_JAVA_OPTIONS", "")
+    assert "-Xmx4g" in jdk_opts
+
+
+def test_run_scala_local_spark_no_xmx_when_driver_memory_unset(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """No -Xmx injection when AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY is not set."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```scala\nval x = 1\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "scala212-dbr-connect", "language": "scala"}}
+
+    monkeypatch.delenv("AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY", raising=False)
+    monkeypatch.delenv("JDK_JAVA_OPTIONS", raising=False)
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        main(["run", str(input_file)])
+
+    jdk_opts = os.environ.get("JDK_JAVA_OPTIONS", "")
+    assert "-Xmx" not in jdk_opts
+
+
+def test_run_scala_local_spark_skips_xmx_when_already_present(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch", capsys,
+) -> None:
+    """If -Xmx is already in JDK_JAVA_OPTIONS, do not inject a second one and do not warn."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```scala\nval x = 1\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "scala212-dbr-connect", "language": "scala"}}
+
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY", "4g")
+    monkeypatch.setenv("JDK_JAVA_OPTIONS", "-Xmx2g")
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        main(["run", str(input_file)])
+
+    jdk_opts = os.environ.get("JDK_JAVA_OPTIONS", "")
+    # Should still have the original -Xmx2g, not -Xmx4g
+    assert "-Xmx2g" in jdk_opts
+    assert "-Xmx4g" not in jdk_opts
+    # Warning should NOT be emitted when -Xmx was not injected
+    captured = capsys.readouterr()
+    assert "total JVM heap" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# LOCAL_SPARK: local-cluster + Scala hard error
+# ---------------------------------------------------------------------------
+
+
+def test_run_scala_local_cluster_errors(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch", capsys,
+) -> None:
+    """local-cluster master with Scala should hard-error (return 1)."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```scala\nval x = 1\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "scala212-dbr-connect", "language": "scala"}}
+
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_MASTER", "local-cluster[2,1,1024]")
+    monkeypatch.delenv("JDK_JAVA_OPTIONS", raising=False)
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+    ):
+        rc = main(["run", str(input_file)])
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "not supported for Scala" in captured.err
+    assert "ClassNotFoundException" in captured.err
+
+
+def test_run_python_local_cluster_no_warning(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch", capsys,
+) -> None:
+    """local-cluster master with Python should NOT emit the Scala warning."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_MASTER", "local-cluster[2,1,1024]")
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="python"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch("importlib.util.find_spec", return_value=MagicMock()),
+        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        main(["run", str(input_file)])
+
+    captured = capsys.readouterr()
+    assert "local-cluster mode is not supported for Scala" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Scala LOCAL_SPARK validation function tests
+# ---------------------------------------------------------------------------
+
+
+def test_validate_scala_local_spark_rejects_local_cluster() -> None:
+    result = _validate_scala_local_spark("local-cluster[2,1,1024]", None)
+    assert result is not None
+    assert "not supported for Scala" in result
+
+
+def test_validate_scala_local_spark_rejects_executor_memory() -> None:
+    result = _validate_scala_local_spark("local[*]", "2g")
+    assert result is not None
+    assert "AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY is not supported" in result
+
+
+@pytest.mark.parametrize("master", ["local", "local[*]", "local[4]", "local[*,3]", "local[4,2]"])
+def test_validate_scala_local_spark_accepts_valid_masters(master: str) -> None:
+    assert _validate_scala_local_spark(master, None) is None
+
+
+@pytest.mark.parametrize("master", [
+    "local-cluster[2,1,1024]", "spark://host:7077", "yarn", "k8s://host", "local[", "local[]",
+])
+def test_validate_scala_local_spark_rejects_invalid_masters(master: str) -> None:
+    assert _validate_scala_local_spark(master, None) is not None
+
+
+# ---------------------------------------------------------------------------
+# Scala LOCAL_SPARK integration-style: executor memory hard error
+# ---------------------------------------------------------------------------
+
+
+def test_run_scala_local_spark_executor_memory_errors(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch", capsys,
+) -> None:
+    """AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY with Scala should hard-error."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```scala\nval x = 1\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "scala212-dbr-connect", "language": "scala"}}
+
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY", "2g")
+    monkeypatch.delenv("JDK_JAVA_OPTIONS", raising=False)
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+    ):
+        rc = main(["run", str(input_file)])
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY is not supported" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Scala LOCAL_SPARK integration-style: driver memory warning
+# ---------------------------------------------------------------------------
+
+
+def test_run_scala_local_spark_driver_memory_warning(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch", capsys,
+) -> None:
+    """AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY emits informational warning after -Xmx injection."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```scala\nval x = 1\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "scala212-dbr-connect", "language": "scala"}}
+
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY", "4g")
+    monkeypatch.delenv("JDK_JAVA_OPTIONS", raising=False)
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+    monkeypatch.delenv("AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY", raising=False)
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        main(["run", str(input_file)])
+
+    captured = capsys.readouterr()
+    assert "total JVM heap" in captured.err
+    assert "-Xmx4g" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Scala LOCAL_SPARK integration-style: invalid master URL hard error
+# ---------------------------------------------------------------------------
+
+
+def test_run_scala_local_spark_invalid_master_errors(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch", capsys,
+) -> None:
+    """Invalid Spark master URL with Scala should hard-error (return 1)."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```scala\nval x = 1\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "scala212-dbr-connect", "language": "scala"}}
+
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_MASTER", "yarn")
+    monkeypatch.delenv("JDK_JAVA_OPTIONS", raising=False)
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch(
+            "databricks_agent_notebooks.cli.merge_config",
+            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
+        ),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+    ):
+        rc = main(["run", str(input_file)])
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "not supported for Scala" in captured.err

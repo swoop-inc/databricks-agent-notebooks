@@ -12,12 +12,73 @@ does not clutter the final document.
 from __future__ import annotations
 
 import base64
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import nbformat
+
+_ANSI_RE = re.compile(
+    r"\x1b"
+    r"(?:"
+    r"\[[0-9;]*[a-zA-Z]"       # CSI sequences: ESC [ ... letter
+    r"|"
+    r"\][^\x07\x1b]*"          # OSC sequences: ESC ] ... (terminated by BEL or ST)
+    r"(?:\x07|\x1b\\)"         # ... BEL or ESC \ terminator
+    r"|"
+    r"\([A-Z]"                 # Character set selection: ESC ( letter
+    r")"
+)
+
+# Almond (Scala REPL) echoes every expression result as lines like:
+#   res0: Long = 10L
+#   result: org.apache.spark.sql.DataFrame = [id: bigint]
+#   import com.databricks.connect.DatabricksSession
+# These are noise in rendered output — the user's intentional output goes
+# through println (stream) or rich display (display_data).
+_ALMOND_REPL_LINE_RE = re.compile(
+    r"^(?:"
+    r"\w[\w.]*\s*:\s*.+=\s*.+"    # identifier: Type = value
+    r"|"
+    r"import\s+.+"                # import statement echo
+    r")$"
+)
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences (CSI codes) from *text*."""
+    return _ANSI_RE.sub("", text)
+
+
+def _is_almond_repl_echo(output: dict, language: str) -> bool:
+    """Return True if *output* is an Almond REPL value echo to suppress.
+
+    The Almond Scala kernel attaches an ``execute_result`` to every cell
+    containing the REPL-style echo of variable bindings and import
+    statements (e.g. ``result: Long = 10L``).  When the output carries
+    only ``text/plain`` (no ``text/html`` or images), and every line
+    matches the Almond echo pattern, we treat it as noise and skip it
+    during rendering.
+    """
+    if language != "scala":
+        return False
+    if output.get("output_type") != "execute_result":
+        return False
+    data = output.get("data", {})
+    # If richer formats are present, the result is intentional display output.
+    if "text/html" in data or "image/png" in data:
+        return False
+    plain = data.get("text/plain", "")
+    if not plain:
+        return False
+    cleaned = _strip_ansi(plain).strip()
+    if not cleaned:
+        return False
+    return all(
+        _ALMOND_REPL_LINE_RE.match(line) for line in cleaned.splitlines()
+    )
 
 
 def _detect_language(nb: nbformat.NotebookNode) -> str:
@@ -160,10 +221,13 @@ def render_markdown(notebook_path: Path, output_path: Path) -> Path:
                 output_type = output.get("output_type", "")
 
                 if output_type == "stream":
-                    pending_stream.append(output.get("text", ""))
+                    pending_stream.append(_strip_ansi(output.get("text", "")))
 
                 elif output_type in ("execute_result", "display_data"):
                     _flush_stream()
+                    # Skip Almond REPL value echoes in Scala notebooks
+                    if _is_almond_repl_echo(output, language):
+                        continue
                     # Text output
                     text = None
                     data = output.get("data", {})
@@ -181,7 +245,7 @@ def render_markdown(notebook_path: Path, output_path: Path) -> Path:
                     elif "text/html" in data:
                         text = data["text/html"]
                     elif "text/plain" in data:
-                        text = data["text/plain"]
+                        text = _strip_ansi(data["text/plain"])
 
                     if text is not None:
                         parts.append("```output")
@@ -191,8 +255,8 @@ def render_markdown(notebook_path: Path, output_path: Path) -> Path:
 
                 elif output_type == "error":
                     _flush_stream()
-                    ename = output.get("ename", "Error")
-                    evalue = output.get("evalue", "")
+                    ename = _strip_ansi(output.get("ename", "Error"))
+                    evalue = _strip_ansi(output.get("evalue", ""))
                     parts.append("```error")
                     parts.append(f"{ename}: {evalue}")
                     parts.append("```")

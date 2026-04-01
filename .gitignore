@@ -14,3 +14,6 @@ plans/
 .worktrees/
 
 tmp/
+
+# agent-notebook run output directories
+*_output/

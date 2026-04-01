@@ -55,8 +55,9 @@ pythonpath = ["src"]
 markers = [
     "integration: Fast integration tests (CLI smoke, no side effects)",
     "slow: Slow tests (kernel downloads, package installs, real execution)",
-    "spark: Tests requiring local PySpark installation",
+    "spark: Tests requiring local Spark execution (PySpark or Almond kernel)",
     "databricks: Tests requiring live Databricks workspace credentials",
+    "scala: Tests requiring Almond/Scala kernel and Java",
 ]
 
 [tool.setuptools]

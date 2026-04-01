@@ -55,7 +55,9 @@ Save a memory containing at minimum:
 - **Tool:** `agent-notebook` at `<which agent-notebook path>`
 - **Version:** `<output of agent-notebook --version>`
 - **Agent docs:** `<this directory's absolute path>`
-- **Execution helper:** `<absolute path to for_agents/scripts/agent-nb-run.sh>`
+- **Execution helper:** `<absolute path to for_agents/scripts/agent-nb-run.sh>` — resolve with:
+  `python3 -c "from importlib.resources import files; print(files('databricks_agent_notebooks').joinpath('for_agents', 'scripts', 'agent-nb-run.sh'))"`
+  This script is NOT on PATH — always use the full resolved path or a cached variable.
 - **Local readiness:** doctor check pass/fail per check, versions discovered (runtimes, kernel, Java)
 - **Scala support:** both cluster-backed and serverless; serverless defaults to Scala 2.13
 - **Operational pattern:** non-blocking execution for cluster-targeted runs (see README for environment-specific pattern)
@@ -121,6 +123,8 @@ Then present a brief summary of what you found (which checks passed, which faile
 
 Intent: prove a real notebook run succeeds for each workspace the user selected in step 4. Every verified workspace needs at least one successful smoke run — serverless or cluster-targeted.
 
+Ensure you have resolved `AGENT_NB_RUN` as shown in the README's "Execution helper script" section before running these examples.
+
 Packaged examples live under `examples/smoke/`:
 
 - `python_select_one.md`
@@ -137,7 +141,7 @@ run or you are unsure of timing, use the long-running pattern from the README
 instead of foreground.
 
 ```bash
-agent-nb-run.sh <installed-for_agents>/examples/smoke/python_select_one.md \
+"$AGENT_NB_RUN" <installed-for_agents>/examples/smoke/python_select_one.md \
   --profile <profile> \
   --output-dir <writable-output-root> \
   --format md
@@ -149,12 +153,12 @@ If the user requested cluster-targeted Python execution in step 4, use a
 non-blocking run. Cluster startup can add minutes — always use your
 environment's long-running pattern (see the README "Long-running runs" section).
 
-Use the execution helper script (`for_agents/scripts/agent-nb-run.sh`) with your
+Use the execution helper script (resolved via `$AGENT_NB_RUN`) with your
 environment's non-blocking pattern. Example using `nohup` (Claude Code, standard
 shells):
 
 ```bash
-nohup agent-nb-run.sh \
+nohup "$AGENT_NB_RUN" \
   <installed-for_agents>/examples/smoke/python_select_one.md \
   --profile <profile> \
   --cluster <cluster-name-or-id-from-strong-context-or-user> \
@@ -173,7 +177,7 @@ If the user confirmed Scala notebook work in step 4, verify Scala execution
 using the same non-blocking pattern as cluster-targeted Python:
 
 ```bash
-nohup agent-nb-run.sh \
+nohup "$AGENT_NB_RUN" \
   <installed-for_agents>/examples/smoke/scala_select_one.md \
   --profile <profile> \
   --cluster <cluster-name-or-id-from-strong-context-or-user> \

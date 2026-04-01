@@ -145,6 +145,49 @@ def check_kernel_semantics(
 
 
 
+def check_pyspark() -> Check:
+    """Check whether pyspark is importable (needed for Python LOCAL_SPARK).
+
+    Uses a two-phase check: ``find_spec`` as a fast negative, then an actual
+    import to catch stump directories or broken installs where ``find_spec``
+    returns a truthy ModuleSpec but the package cannot actually be loaded.
+    """
+    import importlib.metadata  # noqa: PLC0415
+    import importlib.util  # noqa: PLC0415
+
+    spec = importlib.util.find_spec("pyspark")
+    if spec is None:
+        return Check(
+            "pyspark",
+            "warn",
+            "pyspark not found — required for Python LOCAL_SPARK "
+            "(pip install pyspark or uv pip install pyspark)",
+        )
+
+    # find_spec returned truthy — verify the package actually loads.
+    try:
+        import pyspark  # noqa: PLC0415
+    except ImportError as exc:
+        return Check(
+            "pyspark",
+            "warn",
+            f"pyspark directory found but not importable ({exc}) — "
+            "reinstall with: pip install pyspark (or uv pip install pyspark)",
+        )
+
+    # Determine version
+    try:
+        version = importlib.metadata.version("pyspark")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+
+    # Determine source: standalone pyspark vs databricks-connect
+    origin = getattr(spec, "origin", None) or ""
+    source = "databricks-connect" if "databricks" in origin.lower() else "standalone"
+
+    return Check("pyspark", "ok", f"pyspark {version} ({source})")
+
+
 def _resolve_databricks_cfg_path(environ: Mapping[str, str] | None = None) -> Path:
     env_map = dict(os.environ)
     if environ is not None:
@@ -298,6 +341,7 @@ def run_checks(
         check_kernel(home=home, kernels_dir=kernels_dir, kernel_id=kernel_id),
         check_kernel_semantics(home=home, kernels_dir=kernels_dir, kernel_id=kernel_id),
         check_java(),
+        check_pyspark(),
     ]
     if profile is not None:
         checks.append(check_profile(profile, environ=environ))

@@ -30,6 +30,73 @@ Usually safe only when outbound artifact downloads are allowed:
 These commands are good first probes when you only need local packaging or
 runtime-home confirmation.
 
+## Local execution (no Databricks)
+
+`--profile LOCAL_SPARK` runs notebooks against a local Spark session with no
+Databricks credentials or `SPARK_HOME` needed.
+
+- `agent-notebook run notebook.md --profile LOCAL_SPARK` — notebook with injected local SparkSession (language from frontmatter or `--language`)
+
+### Prerequisites by language
+
+**Python LOCAL_SPARK** — sandbox-safe, no special permissions needed.
+- **Prerequisite:** `pyspark` must be installed in the active Python environment
+  (`pip install pyspark` or `uv pip install pyspark`). Run `agent-notebook doctor`
+  to verify — the pyspark check reports the installed version and whether it
+  comes from standalone pyspark or databricks-connect. The check verifies that
+  pyspark can actually be imported, not just that a package directory exists —
+  partial or broken installs are detected and reported. If pyspark is missing,
+  `agent-notebook run --profile LOCAL_SPARK` will fail fast with an actionable
+  error message before attempting notebook execution.
+
+**Scala LOCAL_SPARK** — requires sandbox bypass (the Almond kernel writes to
+`~/Library/Caches/Almond/` on macOS). Use `dangerouslyDisableSandbox: true` in
+Claude Code or equivalent in other sandboxed environments.
+- **Prerequisite:** a matching Almond kernel — Scala 2.12 for Spark 3.x, Scala
+  2.13 for Spark 4.x. See `scala_development.md` for kernel install and
+  version pairing details.
+
+### Environment variables for tuning (all optional)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENT_NOTEBOOK_LOCAL_SPARK_MASTER` | `local[*]` | Spark master URL. Scala has restrictions — see [Scala development](scala_development.md#local-mode-restrictions) |
+| `AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY` | _(Spark default)_ | e.g., `4g` — works for both Python (SparkConf) and Scala (injected as `-Xmx` JVM flag) |
+| `AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY` | _(Spark default)_ | e.g., `2g` — Python `local-cluster` only, rejected for Scala |
+| `AGENT_NOTEBOOK_LOCAL_SPARK_VERSION` | `3.5.4` | Scala only (Python uses pip-installed PySpark); Spark version for `$ivy` import |
+
+`--profile LOCAL_SPARK --cluster foo` is an error — the two are mutually exclusive.
+
+### Configuration behavior
+
+Understanding how Spark master modes interact with memory configuration
+avoids silent misconfiguration:
+
+- **`local[N]` / `local[*]`** — single-JVM mode. All execution happens in the
+  driver process. `local[N]` controls thread-level parallelism; `local[*]` uses
+  all available cores. There are no separate executor processes — the driver IS
+  the executor.
+- **Driver memory** is the only meaningful memory knob in `local[*]` mode:
+  - **Python:** `AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY=4g` is injected as
+    `spark.driver.memory` in SparkConf before session creation.
+  - **Scala:** the same env var is injected as `-Xmx4g` into `JDK_JAVA_OPTIONS`
+    at JVM startup. The SparkConf property is also generated but is decorative
+    for Scala — the JVM heap is already sized by the time `SparkSession.builder`
+    reads configuration.
+- **`spark.executor.memory`**, **`spark.executor.instances`**, and
+  **`spark.executor.cores`** are silently ignored in `local[*]` mode — there
+  are no executor processes to configure.
+- **Scala restrictions:** The CLI validates master URLs, executor memory, and
+  driver memory configuration for Scala at startup, with actionable error
+  messages. See [Scala development — local mode restrictions](scala_development.md#local-mode-restrictions)
+  for the full specification.
+- **`local-cluster[N,C,M]`** spawns separate executor JVMs and works for
+  **Python** notebooks only. It is incompatible with Scala — see the Scala
+  restrictions link above.
+
+Use `--no-inject-session` if you want to skip session injection entirely and
+manage your own Spark session in the notebook.
+
 ## Databricks-facing commands
 
 These commands depend on live Databricks access and may need different sandbox
@@ -38,6 +105,8 @@ or permission handling:
 - `agent-notebook run ...` — the primary execution command. Its `--cluster`
   flag accepts a cluster **name** or **ID** and auto-resolves the name to an ID
   internally. You do NOT need to look up a cluster ID before calling `run`.
+  **Exception:** `agent-notebook run --profile LOCAL_SPARK` is a local command
+  that does not contact Databricks (see "Local execution" above).
 - `agent-notebook clusters ...` — a connectivity probe for initial setup only
   (see `agent_doctor.md`). Do not use it as a pre-step to `run`. On some
   workspaces, it can generate more than a gigabyte of output.
@@ -98,6 +167,8 @@ Current progress model:
 - `agent-notebook run` emits compact progress lines on `stderr` for `prepare`,
   `compute`, `execute-start`, `cell-start`, `executing`, `render`, `done`, and
   `failed`
+- The `compute` phase includes a `mode` value: `local-spark` (LOCAL_SPARK
+  profile), `cluster` (cluster-backed), or `serverless` (no cluster)
 - `cell-start` identifies the current executing cell with `cell_index` plus
   safe generic descriptors such as `[code cell]` or
   `[AGENT-NOTEBOOK:INJECTED] Databricks session setup`
@@ -141,11 +212,24 @@ A parameterizable wrapper script ships with this package at
 rendered output path, stem), output directory creation, early validation, and
 tee-to-log — so you do not need to reconstruct these details from examples.
 
+**Important:** This script is NOT on `PATH`. You must resolve its absolute path
+from the installed package before use.
+
+#### Resolving the script path
+
+```bash
+# Resolve once and reuse:
+AGENT_NB_RUN="$(python3 -c "from importlib.resources import files; print(files('databricks_agent_notebooks').joinpath('for_agents', 'scripts', 'agent-nb-run.sh'))")"
+```
+
+Cache this in `AGENT_NB_RUN` and reuse the variable throughout your session. All
+examples below assume this variable is set.
+
 Use it as the command in any of the patterns below. It forwards all arguments to
 `agent-notebook run` unchanged.
 
 ```bash
-agent-nb-run.sh <notebook> --profile <profile> [--output-dir <dir>] [--cluster <name>] [--format md] [...]
+"$AGENT_NB_RUN" <notebook> --profile <profile> [--output-dir <dir>] [--cluster <name>] [--format md] [...]
 ```
 
 ### Quick reference: which pattern to use
@@ -169,7 +253,7 @@ Use the Bash tool with `run_in_background: true`:
 
 ```bash
 # Use with Bash tool parameter: run_in_background: true
-agent-nb-run.sh path/to/notebook.md \
+"$AGENT_NB_RUN" path/to/notebook.md \
   --profile <profile> \
   --format md \
   --output-dir tmp/run-output
@@ -184,7 +268,7 @@ Best for fire-and-forget — runs survive session termination. Useful when
 operating as a sub-agent or in a short-lived session.
 
 ```bash
-nohup agent-nb-run.sh path/to/notebook.md \
+nohup "$AGENT_NB_RUN" path/to/notebook.md \
   --profile <profile> \
   --format md \
   --output-dir tmp/run-output \
@@ -209,7 +293,7 @@ Start the command in a PTY session (`tty: true`), then poll with empty
 `write_stdin` calls to check progress:
 
 ```bash
-agent-nb-run.sh path/to/notebook.md \
+"$AGENT_NB_RUN" path/to/notebook.md \
   --profile <profile> \
   --format md \
   --output-dir tmp/run-output
@@ -222,7 +306,7 @@ The PTY session has no fixed timeout — the command runs until completion.
 Use the `nohup` detached pattern:
 
 ```bash
-nohup agent-nb-run.sh path/to/notebook.md \
+nohup "$AGENT_NB_RUN" path/to/notebook.md \
   --profile <profile> \
   --format md \
   --output-dir tmp/run-output \
@@ -363,7 +447,7 @@ configuration key containing `.databricks.`:
 **Python:**
 
 ```python
-is_databricks = any(".databricks." in k for k in spark.conf.getAll.keys())
+is_databricks = any(".databricks." in k for k in spark.conf.getAll().keys())
 ```
 
 **Scala:**

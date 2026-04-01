@@ -19,11 +19,14 @@ from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from jupyter_client.kernelspec import KernelSpecManager, NoSuchKernel
 from nbconvert.preprocessors import ExecutePreprocessor
 
 import nbformat
+import nbclient.client as _nbclient_mod
+import nbformat.v4.nbbase as _nbbase
 
 from databricks_agent_notebooks.runtime.home import resolve_runtime_home
 
@@ -235,6 +238,36 @@ def _patched_execution_environment(runtime_data_dir: str):
             os.environ.pop("JUPYTER_PATH", None)
 
 
+@contextmanager
+def _robust_kernel_error_output():
+    """Ensure kernel error messages have ``traceback``, ``ename``, and ``evalue``.
+
+    Some Jupyter kernels (notably Almond/Scala) omit ``traceback`` from IOPub
+    ``error`` messages on compile errors.  ``nbformat.v4.nbbase.output_from_msg``
+    accesses these fields via direct dict lookup, so a missing key raises
+    ``KeyError("traceback")`` which propagates as a useless error string.
+
+    This context manager monkey-patches ``output_from_msg`` at its call site in
+    ``nbclient.client`` (where the bound reference lives) to default missing
+    fields before the original function sees them, keeping the normal
+    ``CellExecutionError`` path intact so callers get ename/evalue in the error
+    message.
+    """
+    _original = _nbclient_mod.output_from_msg
+
+    def _patched(msg):  # noqa: ANN001, ANN202
+        msg_type = msg.get("header", {}).get("msg_type") or msg.get("msg_type", "")
+        if msg_type == "error":
+            content = msg.get("content", {})
+            content.setdefault("traceback", [])
+            content.setdefault("ename", "UnknownError")
+            content.setdefault("evalue", "")
+        return _original(msg)
+
+    with patch.object(_nbclient_mod, "output_from_msg", _patched):
+        yield
+
+
 def _execute_notebook_local(
     notebook_path: Path,
     *,
@@ -294,7 +327,10 @@ def _execute_notebook_local(
     )
 
     try:
-        with _patched_execution_environment(str(runtime_home.kernels_dir.parent)):
+        with (
+            _patched_execution_environment(str(runtime_home.kernels_dir.parent)),
+            _robust_kernel_error_output(),
+        ):
             executed_notebook, _ = executor.preprocess(notebook, resources)
     except Exception as exc:
         return ExecutionResult(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import sys
 from pathlib import Path
@@ -75,6 +76,7 @@ def test_run_checks_reports_kernel_semantics_warning_and_optional_profile(tmp_pa
     assert statuses["kernel_semantics"] == "fail"
     assert "spark_home" not in statuses
     assert statuses["java"] == "ok"
+    assert "pyspark" in statuses
     assert statuses["profile"] == "ok"
 
 
@@ -101,6 +103,7 @@ def test_run_checks_reports_missing_java_and_kernel(tmp_path: Path) -> None:
     assert statuses["kernel"] == "fail"
     assert statuses["kernel_semantics"] == "fail"
     assert statuses["java"] == "fail"
+    assert "pyspark" in statuses
     assert "kernels install" in messages["kernel"]
 
 
@@ -361,6 +364,112 @@ def test_java_ok_at_17() -> None:
 
     assert check.status == "ok"
     assert "17" in check.message
+
+
+def _pyspark_import_passthrough():
+    """Return an __import__ replacement that allows ``import pyspark`` to succeed with a mock."""
+    original_import = builtins.__import__
+    fake_pyspark = Mock()
+
+    def mock_import(name, *args, **kwargs):
+        if name == "pyspark":
+            return fake_pyspark
+        return original_import(name, *args, **kwargs)
+
+    return mock_import
+
+
+def test_check_pyspark_found_standalone() -> None:
+    from databricks_agent_notebooks.runtime.doctor import check_pyspark
+
+    spec = Mock(origin="/usr/lib/python3.12/site-packages/pyspark/__init__.py")
+    with (
+        patch("importlib.util.find_spec", return_value=spec),
+        patch("importlib.metadata.version", return_value="3.5.4"),
+        patch("builtins.__import__", side_effect=_pyspark_import_passthrough()),
+    ):
+        check = check_pyspark()
+
+    assert check.name == "pyspark"
+    assert check.status == "ok"
+    assert "3.5.4" in check.message
+    assert "standalone" in check.message
+
+
+def test_check_pyspark_found_databricks_connect() -> None:
+    from databricks_agent_notebooks.runtime.doctor import check_pyspark
+
+    spec = Mock(origin="/usr/lib/python3.12/site-packages/databricks/connect/pyspark/__init__.py")
+    with (
+        patch("importlib.util.find_spec", return_value=spec),
+        patch("importlib.metadata.version", return_value="16.4.0"),
+        patch("builtins.__import__", side_effect=_pyspark_import_passthrough()),
+    ):
+        check = check_pyspark()
+
+    assert check.name == "pyspark"
+    assert check.status == "ok"
+    assert "16.4.0" in check.message
+    assert "databricks-connect" in check.message
+
+
+def test_check_pyspark_found_unknown_version() -> None:
+    import importlib.metadata
+
+    from databricks_agent_notebooks.runtime.doctor import check_pyspark
+
+    spec = Mock(origin="/some/path/pyspark/__init__.py")
+    with (
+        patch("importlib.util.find_spec", return_value=spec),
+        patch("importlib.metadata.version", side_effect=importlib.metadata.PackageNotFoundError("pyspark")),
+        patch("builtins.__import__", side_effect=_pyspark_import_passthrough()),
+    ):
+        check = check_pyspark()
+
+    assert check.name == "pyspark"
+    assert check.status == "ok"
+    assert "unknown" in check.message
+    assert "standalone" in check.message
+
+
+def test_check_pyspark_not_found() -> None:
+    from databricks_agent_notebooks.runtime.doctor import check_pyspark
+
+    with patch("importlib.util.find_spec", return_value=None):
+        check = check_pyspark()
+
+    assert check.name == "pyspark"
+    assert check.status == "warn"
+    assert "not found" in check.message
+    assert "LOCAL_SPARK" in check.message
+
+
+def test_check_pyspark_stump_directory_detected() -> None:
+    """find_spec returns truthy but actual import fails — should warn, not ok."""
+    from databricks_agent_notebooks.runtime.doctor import check_pyspark
+
+    spec = Mock(origin="/some/path/pyspark/__init__.py")
+
+    original_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "pyspark":
+            raise ImportError("No module named 'pyspark'")
+        return original_import(name, *args, **kwargs)
+
+    # Ensure pyspark is not cached in sys.modules (otherwise import bypasses __import__ mock)
+    _saved = {k: sys.modules.pop(k) for k in [k for k in sys.modules if k == "pyspark" or k.startswith("pyspark.")]}
+    with (
+        patch("importlib.util.find_spec", return_value=spec),
+        patch("builtins.__import__", side_effect=mock_import),
+    ):
+        check = check_pyspark()
+    sys.modules.update(_saved)
+
+    assert check.name == "pyspark"
+    assert check.status == "warn"
+    assert "not importable" in check.message
+    assert "reinstall" in check.message
 
 
 def test_check_profile_default_requires_real_default_entries(tmp_path: Path) -> None:

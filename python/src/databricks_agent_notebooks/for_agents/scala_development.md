@@ -190,6 +190,55 @@ Keep external imports unchanged.
 To make it easier to follow the full procedure, you may direct agent sessions
 to the instructions in `package_cell_instructions.md`.
 
+## LOCAL_SPARK for Scala notebooks
+
+`--profile LOCAL_SPARK` injects a standalone Apache Spark session (not
+Databricks Connect) into Scala notebooks via an Ammonite `$ivy` import. This
+is useful for testing Scala notebook logic without Databricks credentials.
+
+How it works:
+
+- The injected cell adds `import $ivy.\`org.apache.spark::spark-sql:<version>\``
+  followed by a `SparkSession.builder()` call
+- The `$ivy` import uses `::` (cross-version), so the Almond kernel's Scala
+  version determines the artifact suffix automatically
+- `AGENT_NOTEBOOK_LOCAL_SPARK_VERSION` controls the Spark version in the `$ivy`
+  import (default: `3.5.4`)
+
+**Kernel/version pairing:** Spark 3.5.x artifacts are published for Scala 2.12,
+so use a Scala 2.12 Almond kernel. Spark 4.x dropped Scala 2.12 entirely — use
+a Scala 2.13 kernel for Spark 4.x notebooks. The kernel install command
+(`agent-notebook kernels install --scala-version 2.12`) handles this.
+
+`SPARK_HOME` is not needed — the `$ivy` import downloads Spark JARs on first
+use and caches them via Coursier.
+
+**Sandbox caveat:** Scala LOCAL_SPARK requires sandbox bypass — the Almond
+kernel writes to `~/Library/Caches/Almond/` on macOS. Use
+`dangerouslyDisableSandbox: true` in Claude Code or equivalent in other
+sandboxed environments.
+
+#### Local mode restrictions
+
+In local mode, the driver IS the executor — all Spark task threads share one
+JVM heap. There are no separate executor processes. The CLI validates
+configuration at startup and produces actionable error messages for invalid
+combinations.
+
+**Valid master URLs:** `local`, `local[N]`, `local[*]`, `local[N,M]`,
+`local[*,M]`. Any other form (notably `local-cluster[N,C,M]`) is rejected.
+`local-cluster` spawns separate executor JVMs that cannot see classes loaded
+by the Almond kernel's dynamic classloader (`ClassNotFoundException`).
+
+**Memory configuration:**
+
+- `AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY=4g` sets `-Xmx4g` on the kernel
+  JVM at startup. This controls the **total** heap (driver + all task threads),
+  not just a "driver" portion. The SparkConf `spark.driver.memory` property is
+  also set but is decorative — the JVM heap is already sized by then.
+- `AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY` is rejected with an error.
+  There are no executor processes in any valid Scala local mode.
+
 ## What this repo provides
 
 The packaged examples under `examples/scala/` show:
