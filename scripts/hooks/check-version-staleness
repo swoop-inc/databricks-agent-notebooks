@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Check if the globally installed agent-notebook version matches the current git state.
+# Called by reference-transaction (tag changes) and post-rewrite (squash/rebase) hooks.
+# Also usable standalone: scripts/hooks/check-version-staleness
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+
+# Only check if agent-notebook is installed
+command -v agent-notebook >/dev/null 2>&1 || exit 0
+
+# Get installed version (strip the "agent-notebook " prefix)
+installed=$(agent-notebook --version 2>/dev/null | awk '{print $2}') || exit 0
+[ -z "$installed" ] && exit 0
+
+# Get expected version base from git describe
+# setuptools-scm uses: {tag}.dev{distance}+g{hash} for dev versions, {tag} for tagged commits
+git_describe=$(git -C "$REPO_ROOT" describe --tags --long --match 'v*' 2>/dev/null) || exit 0
+[ -z "$git_describe" ] && exit 0
+
+# Parse git describe: v0.6.1-1-ge889c27 -> tag=0.6.1, distance=1, hash=e889c27
+tag=$(echo "$git_describe" | sed 's/^v//' | sed 's/-[0-9]*-g[0-9a-f]*$//')
+distance=$(echo "$git_describe" | sed 's/.*-\([0-9]*\)-g[0-9a-f]*$/\1/')
+
+if [ "$distance" = "0" ]; then
+    # We're on a tag -- installed version should match the tag exactly
+    expected_base="$tag"
+else
+    # Dev version -- setuptools-scm increments the patch and adds .devN
+    # Split tag into major.minor.patch, increment patch
+    major=$(echo "$tag" | cut -d. -f1)
+    minor=$(echo "$tag" | cut -d. -f2)
+    patch=$(echo "$tag" | cut -d. -f3)
+    next_patch=$((patch + 1))
+    expected_base="${major}.${minor}.${next_patch}.dev${distance}"
+fi
+
+# Compare base versions (ignore +g{hash} local segment which varies)
+installed_base=$(echo "$installed" | sed 's/+.*//')
+
+if [ "$installed_base" != "$expected_base" ]; then
+    echo ""
+    echo "  WARNING: Global agent-notebook version is stale."
+    echo "  Installed: $installed"
+    echo "  Expected:  ${expected_base}+g..."
+    echo ""
+    echo "  Refresh with:"
+    echo "    uv tool install --force --reinstall \\"
+    echo "      --from \"$(git rev-parse --show-toplevel)/python[local-spark]\" \\"
+    echo "      databricks-agent-notebooks"
+    echo ""
+fi

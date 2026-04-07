@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Git hook: post-rewrite
+# Fires after git rebase or git commit --amend (squashes, history rewrites).
+# These can change the commit distance from the latest tag, making the installed version stale.
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+checker="$REPO_ROOT/scripts/hooks/check-version-staleness"
+[ -x "$checker" ] && "$checker" || true

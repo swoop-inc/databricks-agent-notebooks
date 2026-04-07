@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Install version-staleness git hooks.
+# Symlinks repo-tracked hook scripts into .git/hooks/ so they stay up to date.
+# Safe to re-run -- skips hooks that already exist (won't overwrite custom hooks).
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+HOOK_SRC="$REPO_ROOT/scripts/hooks"
+HOOK_DST="$(git rev-parse --git-common-dir)/hooks"
+
+hooks=(reference-transaction post-rewrite)
+
+for hook in "${hooks[@]}"; do
+    src="$HOOK_SRC/$hook"
+    dst="$HOOK_DST/$hook"
+
+    if [ ! -f "$src" ]; then
+        echo "SKIP $hook -- source not found at $src"
+        continue
+    fi
+
+    if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+        echo "SKIP $hook -- $dst exists and is not a symlink (won't overwrite)"
+        continue
+    fi
+
+    ln -sf "$src" "$dst"
+    chmod +x "$src"
+    echo "  OK $hook -> $src"
+done
+
+# Also make the check script executable
+chmod +x "$HOOK_SRC/check-version-staleness" 2>/dev/null || true
+
+echo ""
+echo "Hooks installed. They will warn when the global agent-notebook version"
+echo "becomes stale after tag changes or history rewrites."

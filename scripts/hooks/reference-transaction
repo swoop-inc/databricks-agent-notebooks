@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Git hook: reference-transaction
+# Fires when refs (including tags) are created, updated, or deleted.
+# We check for version staleness only when version-relevant tags change.
+set -euo pipefail
+
+state="${1:-}"
+[ "$state" = "committed" ] || exit 0
+
+# Read updated refs from stdin; check if any are version tags
+tag_changed=false
+while IFS=' ' read -r _old _new refname; do
+    case "$refname" in
+        refs/tags/v*) tag_changed=true; break ;;
+    esac
+done
+
+if $tag_changed; then
+    HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+    checker="$REPO_ROOT/scripts/hooks/check-version-staleness"
+    [ -x "$checker" ] && "$checker" || true
+fi
