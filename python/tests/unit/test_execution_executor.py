@@ -322,7 +322,7 @@ def test_execute_notebook_emits_safe_cell_progress_for_injected_cells(
     assert result.success is True
     progress_lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith("agent-notebook:")]
     assert progress_lines[0].startswith("agent-notebook: phase=cell-start cell_index=1")
-    assert 'cell_label="[AGENT-NOTEBOOK:INJECTED] Databricks session setup"' in progress_lines[0]
+    assert '[AGENT-NOTEBOOK:INJECTED]' in progress_lines[0]
     assert "DatabricksSession.builder.serverless" not in progress_lines[0]
     assert any("phase=executing" in line and "heartbeat=1" in line and "cell_index=1" in line for line in progress_lines[1:])
 

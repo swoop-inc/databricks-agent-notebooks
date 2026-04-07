@@ -190,11 +190,13 @@ Keep external imports unchanged.
 To make it easier to follow the full procedure, you may direct agent sessions
 to the instructions in `package_cell_instructions.md`.
 
-## LOCAL_SPARK for Scala notebooks
+## Local Spark for Scala notebooks
 
-`--profile LOCAL_SPARK` injects a standalone Apache Spark session (not
-Databricks Connect) into Scala notebooks via an Ammonite `$ivy` import. This
-is useful for testing Scala notebook logic without Databricks credentials.
+`--cluster "local[*]"` (or `local[N]` for specific parallelism) injects a
+standalone Apache Spark session (not Databricks Connect) into Scala notebooks
+via an Ammonite `$ivy` import. This is useful for testing Scala notebook logic
+without Databricks credentials. The deprecated `--profile LOCAL_SPARK` still
+works but emits a warning.
 
 How it works:
 
@@ -213,7 +215,7 @@ a Scala 2.13 kernel for Spark 4.x notebooks. The kernel install command
 `SPARK_HOME` is not needed — the `$ivy` import downloads Spark JARs on first
 use and caches them via Coursier.
 
-**Sandbox caveat:** Scala LOCAL_SPARK requires sandbox bypass — the Almond
+**Sandbox caveat:** Scala local Spark requires sandbox bypass -- the Almond
 kernel writes to `~/Library/Caches/Almond/` on macOS. Use
 `dangerouslyDisableSandbox: true` in Claude Code or equivalent in other
 sandboxed environments.

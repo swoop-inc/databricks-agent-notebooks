@@ -67,9 +67,12 @@ while [ $i -lt ${#args[@]} ]; do
                 fi
             fi
             ;;
-        --cluster|--timeout|--language|--allow-errors|--no-inject-session)
-            # Known flags that take a value — skip the value token
+        --cluster|--timeout|--language)
+            # Known flags that take a value -- skip the value token
             if [ -z "$val" ]; then i=$((i + 1)); fi
+            ;;
+        --allow-errors|--no-inject-session|--no-preprocess|--clean)
+            # Known boolean flags (no value) -- nothing to skip
             ;;
         -*)
             # Unknown flags (forwarded as-is, assumed no value)

@@ -28,7 +28,8 @@ import nbformat
 import nbclient.client as _nbclient_mod
 import nbformat.v4.nbbase as _nbbase
 
-from databricks_agent_notebooks.runtime.home import resolve_runtime_home
+# runtime.home is imported lazily inside execute_notebook() so that
+# importing this module does not pull in runtime dependencies.
 
 try:
     from ipykernel.kernelspec import install as install_ipykernel
@@ -126,9 +127,20 @@ def _iter_meaningful_lines(source: str) -> list[str]:
     return [line.strip() for line in source.splitlines() if line.strip()]
 
 
+_CELL_ROLE_LABELS = {
+    "parameters": "[AGENT-NOTEBOOK:INJECTED] Parameters setup",
+    "session": "[AGENT-NOTEBOOK:INJECTED] Session setup",
+    "prologue": "[AGENT-NOTEBOOK:INJECTED] Prologue",
+    "epilogue": "[AGENT-NOTEBOOK:INJECTED] Epilogue",
+}
+
+
 def _build_cell_label(cell: nbformat.NotebookNode, lines: list[str]) -> str:
+    role = cell.metadata.get("agent_notebook_cell_role")
+    if role and role in _CELL_ROLE_LABELS:
+        return _CELL_ROLE_LABELS[role]
     if cell.metadata.get("agent_notebook_injected", False):
-        return "[AGENT-NOTEBOOK:INJECTED] Databricks session setup"
+        return "[AGENT-NOTEBOOK:INJECTED] Setup"
     cell_type = str(cell.get("cell_type", "cell"))
     if not lines:
         return f"[empty {cell_type} cell]"
@@ -303,6 +315,7 @@ def _execute_notebook_local(
         output_path = notebook_path.with_suffix(".executed.ipynb")
 
     start = time.monotonic()
+    from databricks_agent_notebooks.runtime.home import resolve_runtime_home  # noqa: PLC0415
     runtime_home = resolve_runtime_home()
     try:
         ensure_execution_kernel(kernel, extra_kernel_dirs=[str(runtime_home.kernels_dir)])

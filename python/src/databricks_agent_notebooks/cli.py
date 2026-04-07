@@ -8,47 +8,81 @@ same argparse/subparsers/dispatch-table pattern as ``libs.continuum.cli``.
 from __future__ import annotations
 
 import argparse
-import re
+import json
 import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 from databricks_agent_notebooks import __version__
-from databricks_agent_notebooks.config.frontmatter import DatabricksConfig, is_local_spark, merge_config
+from databricks_agent_notebooks.config.frontmatter import (
+    AgentNotebookConfig, is_local_master, is_local_spark, is_serverless_cluster,
+    load_frontmatter_source_map,
+)
+from databricks_agent_notebooks.config.project import load_project_source_map
+from databricks_agent_notebooks.config.resolution import (
+    EnvironmentNotFoundError, collect_env_vars, resolve_params,
+)
 from databricks_agent_notebooks.execution.executor import RawProgressValue, emit_progress_signal, execute_notebook
-from databricks_agent_notebooks.execution.injection import inject_cells
+from databricks_agent_notebooks.execution.injection import inject_cells, inject_lifecycle_cells
 from databricks_agent_notebooks.execution.rendering import render
 from databricks_agent_notebooks.formats.conversion import to_notebook, validate_single_language
-from databricks_agent_notebooks.integrations.databricks.clusters import ClusterError, default_service
-from databricks_agent_notebooks.runtime.connect import ensure_cluster_runtime, ensure_serverless_runtime
-from databricks_agent_notebooks.runtime.home import resolve_runtime_home
+from databricks_agent_notebooks.preprocessing import preprocess_text
+from databricks_agent_notebooks.preprocessing.errors import PreprocessorError
 import os
 
 from databricks_agent_notebooks._constants import (
     DEFAULT_SCALA_VARIANT,
+    KERNELSPECS,
+    LOCAL_MASTER_RE,
+    LOCAL_SPARK_DEFAULT_MASTER,
     LOCAL_SPARK_DEFAULT_VERSION,
     SCALA_212,
     SCALA_VARIANTS,
 )
-from databricks_agent_notebooks.runtime.scala_connect import prefetch_scala_connect, resolve_scala_connect
-from databricks_agent_notebooks.runtime.doctor import Check, doctor_scala_connect_readiness, run_checks
-from databricks_agent_notebooks.runtime.inventory import doctor_installed_runtimes, list_installed_runtimes
-from databricks_agent_notebooks.runtime.kernel import (
-    KERNEL_DISPLAY_NAME,
-    KERNEL_DISPLAY_NAME_213,
-    KERNEL_ID,
-    KERNEL_ID_213,
-    install_kernel,
-    list_installed_kernels,
-    remove_kernel,
-)
+
+# Scala/kernel/runtime/Databricks modules are imported lazily inside the
+# functions that need them so that pure-Python LOCAL_SPARK runs never touch
+# the JVM, Scala tooling, or Databricks SDK.  See: runtime.scala_connect,
+# runtime.doctor, runtime.inventory, runtime.kernel, runtime.connect,
+# runtime.home (deferred in execution.executor), integrations.databricks.clusters.
 
 import nbformat
 
-_VALID_SCALA_LOCAL_MASTER_RE = re.compile(r"^local(\[(\*|\d+)(,\d+)?\])?$")
+# Backward compat alias — tests may reference this.  The canonical regex
+# lives in _constants.LOCAL_MASTER_RE.
+_VALID_SCALA_LOCAL_MASTER_RE = LOCAL_MASTER_RE
+
+
+def _resolve_library_paths(libraries: list[str], notebook_dir: Path) -> tuple[str, ...]:
+    """Resolve user-provided library paths relative to the notebook directory.
+
+    Resolution rules:
+    1. Relative paths are resolved against *notebook_dir*.
+    2. If a resolved path is a directory containing both ``pyproject.toml``
+       and a ``src/`` subdirectory, the path is auto-resolved to ``src/``.
+    3. Non-existent paths produce a warning on stderr but are still included
+       (the user may be preparing a path that will exist at execution time).
+
+    Returns a tuple of resolved absolute path strings.
+    """
+    resolved: list[str] = []
+    for raw in libraries:
+        p = Path(raw)
+        if not p.is_absolute():
+            p = notebook_dir / p
+        p = p.resolve()
+        # src/ layout auto-detection
+        if p.is_dir() and (p / "pyproject.toml").is_file() and (p / "src").is_dir():
+            p = p / "src"
+        if not p.exists():
+            print(f"warning: library path does not exist: {p}", file=sys.stderr)
+        resolved.append(str(p))
+    return tuple(resolved)
 
 
 def _validate_scala_local_spark(master: str, executor_memory: str | None) -> str | None:
@@ -117,14 +151,41 @@ def _build_parser() -> argparse.ArgumentParser:
     # -- run --
     run = subparsers.add_parser("run", help="Normalize, inject, execute, and render a notebook")
     run.add_argument("file", help="Input file (markdown, ipynb, or Databricks source)")
-    run.add_argument("--cluster", default=None, help="Cluster name or ID")
+    run.add_argument(
+        "--cluster", default=None,
+        help='Execution target: cluster name/ID, "local[N]" for local Spark, '
+             'or SERVERLESS for serverless',
+    )
     run.add_argument("--profile", default=None, help="Databricks auth profile")
-    run.add_argument("--format", default="all", choices=["all", "md", "html"], dest="fmt", help="Output format (default: all)")
+    run.add_argument("--format", default=None, choices=["all", "md", "html"], dest="fmt", help="Output format (default: all)")
     run.add_argument("--output-dir", default=None, help="Output directory (default: input file's parent)")
     run.add_argument("--timeout", type=int, default=None, help="Per-cell timeout in seconds (default: unset)")
-    run.add_argument("--allow-errors", action="store_true", help="Continue execution on cell errors")
-    run.add_argument("--no-inject-session", action="store_true", help="Skip Databricks Connect session injection")
+    run.add_argument("--allow-errors", action="store_true", default=None, help="Continue execution on cell errors")
+    run.add_argument("--no-inject-session", action="store_true", default=None, help="Skip Databricks Connect session injection")
     run.add_argument("--language", default=None, help="Override notebook language (python, scala)")
+    run.add_argument("--no-preprocess", action="store_true", default=None, help="Skip preprocessing directive expansion")
+    run.add_argument(
+        "--param", action="append", dest="params", metavar="NAME=VALUE",
+        help="Set a preprocessing parameter (repeatable)",
+    )
+    run.add_argument("--clean", action="store_true", default=None, help="Remove and recreate the output directory before running")
+    run.add_argument("--env", default=None, help="Named environment from pyproject.toml")
+    run.add_argument(
+        "--params", default=None, dest="params_json", metavar="JSON",
+        help="JSON object of parameters (alternative to repeated --param)",
+    )
+    run.add_argument(
+        "--library",
+        action="append",
+        default=None,
+        dest="libraries",
+        help=(
+            "Add a Python library path to sys.path for notebook execution. "
+            "Can be specified multiple times. Paths are resolved relative to "
+            "the notebook file. Directories with pyproject.toml + src/ layout "
+            "auto-resolve to the src/ subdirectory."
+        ),
+    )
 
     # -- clusters --
     clusters = subparsers.add_parser("clusters", help="List Databricks clusters")
@@ -139,8 +200,8 @@ def _build_parser() -> argparse.ArgumentParser:
     kernel_subparsers = kernels.add_subparsers(dest="kernels_command", required=True)
 
     kernels_install = kernel_subparsers.add_parser("install", help="Install the Databricks Connect Almond kernel")
-    kernels_install.add_argument("--id", default=KERNEL_ID, help="Stable kernel identifier")
-    kernels_install.add_argument("--display-name", default=KERNEL_DISPLAY_NAME, help="User-facing kernel display name")
+    kernels_install.add_argument("--id", default=SCALA_212.kernel_id, help="Stable kernel identifier")
+    kernels_install.add_argument("--display-name", default=SCALA_212.kernel_display_name, help="User-facing kernel display name")
     install_location = kernels_install.add_mutually_exclusive_group()
     install_location.add_argument("--user", action="store_true", help="Install into the user Jupyter kernels directory")
     install_location.add_argument("--prefix", default=None, help="Install under PREFIX/share/jupyter/kernels")
@@ -198,7 +259,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # -- doctor --
     doctor = subparsers.add_parser("doctor", help="Run readiness checks for kernels and managed runtimes")
-    doctor.add_argument("--id", default=KERNEL_ID, help="Kernel identifier to validate")
+    doctor.add_argument("--id", default=SCALA_212.kernel_id, help="Kernel identifier to validate")
     doctor.add_argument("--profile", default=None, help="Databricks auth profile to validate")
     doctor.add_argument("--jupyter-path", default=None, help="Validate an explicit Jupyter kernels directory")
     doctor.add_argument("--kernels-dir", default=None, help=argparse.SUPPRESS)
@@ -214,6 +275,74 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
+def _build_cli_source_map(args: argparse.Namespace) -> dict[str, Any]:
+    """Build a source map dict from CLI argparse flags."""
+    source: dict[str, Any] = {}
+
+    # Named flags -> top-level keys
+    if args.profile is not None:
+        source["profile"] = args.profile
+    if args.cluster is not None:
+        source["cluster"] = args.cluster
+    if args.language is not None:
+        source["language"] = args.language
+    if args.fmt is not None:
+        source["format"] = args.fmt
+    if args.timeout is not None:
+        source["timeout"] = args.timeout
+    if args.output_dir is not None:
+        source["output_dir"] = args.output_dir
+
+    # Inverted boolean flags
+    if args.no_inject_session is not None and args.no_inject_session:
+        source["inject_session"] = False
+    if args.no_preprocess is not None and args.no_preprocess:
+        source["preprocess"] = False
+
+    # Positive boolean flags
+    if args.allow_errors is not None and args.allow_errors:
+        source["allow_errors"] = True
+    if args.clean is not None and args.clean:
+        source["clean"] = True
+
+    # Environment selection
+    if args.env is not None:
+        source["env"] = args.env
+
+    # Libraries
+    if args.libraries:
+        source["libraries"] = list(args.libraries)
+
+    # Params: merge --params JSON and --param NAME=VALUE (--param wins)
+    params: dict[str, str] = {}
+    if args.params_json is not None:
+        try:
+            parsed = json.loads(args.params_json)
+        except json.JSONDecodeError as exc:
+            # Will be caught by caller -- store raw for error reporting
+            raise SystemExit(f"error: invalid --params JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise SystemExit("error: --params JSON must be an object, not " + type(parsed).__name__)
+        params.update({str(k): str(v) for k, v in parsed.items()})
+    if args.params:
+        for entry in args.params:
+            if "=" not in entry:
+                raise SystemExit(f"error: invalid --param format: {entry!r} (must contain '=')")
+            key, value = entry.split("=", 1)
+            if not key:
+                raise SystemExit(f"error: invalid --param format: {entry!r} (empty key)")
+            params[key] = value
+    if params:
+        source["params"] = params
+
+    return source
+
+
+def _stringify_params(params: dict[str, Any]) -> dict[str, str]:
+    """Coerce all param values to strings for preprocessing."""
+    return {k: str(v) for k, v in params.items()}
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """Full pipeline: normalize -> merge config -> inject -> execute -> render."""
     input_path = Path(args.file).resolve()
@@ -221,8 +350,77 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"error: file not found: {args.file}", file=sys.stderr)
         return 1
 
+    # Step 0: Build source maps from all four levels
+    try:
+        cli_source = _build_cli_source_map(args)
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    toml_source, _toml_base_dir = load_project_source_map(input_path.parent)
+    env_var_source = collect_env_vars()
+
+    # Early frontmatter for preprocessing decisions (.md files only)
+    early_fm_source: dict[str, Any] = {}
+    if input_path.suffix.lower() == ".md":
+        early_fm_source = load_frontmatter_source_map(input_path)
+
+    # Preliminary resolution (for preprocessing)
+    try:
+        preliminary_resolved = resolve_params([toml_source, env_var_source, early_fm_source, cli_source])
+    except EnvironmentNotFoundError as exc:
+        print(f"error: unknown environment: {exc}", file=sys.stderr)
+        return 1
+
+    preliminary_config, preliminary_notebook_params = AgentNotebookConfig.from_resolved_params(
+        preliminary_resolved,
+    )
+    preliminary_config = preliminary_config.with_defaults(preprocess=True)
+
+    has_user_params = bool(cli_source.get("params") or preliminary_notebook_params)
+    if has_user_params and not preliminary_config.preprocess:
+        print(
+            "warning: parameters have no effect when preprocessing is disabled",
+            file=sys.stderr,
+        )
+    if has_user_params and input_path.suffix.lower() == ".ipynb":
+        print(
+            "warning: --param flags have no effect for .ipynb files "
+            "(preprocessing applies only to text-based notebook formats)",
+            file=sys.stderr,
+        )
+
+    tmp_preprocess_path: Path | None = None
+    parse_path = input_path
+    if preliminary_config.preprocess and input_path.suffix.lower() != ".ipynb":
+        raw_text = input_path.read_text()
+        try:
+            preprocessed = preprocess_text(
+                raw_text, notebook_path=input_path,
+                params=_stringify_params(preliminary_notebook_params),
+            )
+        except PreprocessorError as exc:
+            emit_progress_signal("failed", error=str(exc))
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if preprocessed is not raw_text:
+            tmp_fd, tmp_name = tempfile.mkstemp(suffix=input_path.suffix)
+            os.close(tmp_fd)
+            tmp_preprocess_path = Path(tmp_name)
+            tmp_preprocess_path.write_text(preprocessed)
+            parse_path = tmp_preprocess_path
+
     # Step 1: Normalize to notebook
-    notebook, frontmatter_config = to_notebook(input_path)
+    try:
+        notebook, _frontmatter_config = to_notebook(parse_path)
+    finally:
+        # Clean up preprocessing temp file whether to_notebook() succeeded or not
+        if tmp_preprocess_path is not None:
+            try:
+                tmp_preprocess_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     stem = input_path.stem
     emit_progress_signal("prepare", input_path=str(input_path), notebook_stem=stem)
 
@@ -234,21 +432,104 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    # Step 2: Merge config
-    config = merge_config(
-        frontmatter_config or DatabricksConfig(),
-        cli_profile=args.profile,
-        cli_cluster=args.cluster,
-        cli_language=args.language,
-    )
-    language = _resolve_execution_language(notebook, config)
-    inject_session = not args.no_inject_session
+    # Step 2: Final resolution with post-preprocessing frontmatter
+    # Preprocessing only affects the body (not the YAML header block),
+    # so the early frontmatter source map is always correct.
+    fm_source = early_fm_source
 
-    # Step 2b: LOCAL_SPARK validation and branching
-    local_spark = is_local_spark(config)
-    if local_spark and config.cluster:
-        print("error: --profile LOCAL_SPARK and --cluster are mutually exclusive", file=sys.stderr)
+    try:
+        resolved = resolve_params([toml_source, env_var_source, fm_source, cli_source])
+    except EnvironmentNotFoundError as exc:
+        print(f"error: unknown environment: {exc}", file=sys.stderr)
         return 1
+
+    config, notebook_params = AgentNotebookConfig.from_resolved_params(
+        resolved,
+    )
+
+    # Capture typed params before stringification for parameters_setup cell
+    typed_notebook_params = dict(notebook_params) if notebook_params is not None else None
+
+    # Attach notebook params to config for downstream consumers
+    if notebook_params:
+        config = replace(config, params=_stringify_params(notebook_params))
+
+    # Apply hardcoded defaults
+    config = config.with_defaults(
+        format="all", inject_session=True, preprocess=True,
+        allow_errors=False, clean=False,
+    )
+
+    language = _resolve_execution_language(notebook, config)
+    inject_session = config.inject_session
+
+    # Resolve library paths (relative to notebook file, except project-level
+    # paths which were already resolved to absolute by load_project_source_map)
+    if config.libraries and inject_session:
+        resolved_libs = _resolve_library_paths(list(config.libraries), input_path.parent)
+        if language == "scala" and resolved_libs:
+            print(
+                "warning: --library is not supported for Scala notebooks (ignored)",
+                file=sys.stderr,
+            )
+            resolved_libs = ()
+        config = replace(config, libraries=resolved_libs if resolved_libs else None)
+
+    # Step 2b: Normalize --cluster reserved values
+    # After the three-level merge, config.cluster may contain a reserved
+    # name (SERVERLESS, local[N]) from any config level.  Normalize here
+    # so the rest of the pipeline sees clean flags.
+    master_override: str | None = None
+    legacy_local_spark = is_local_spark(config)
+
+    if is_serverless_cluster(config.cluster):
+        # --cluster SERVERLESS: explicit serverless selection
+        if legacy_local_spark:
+            print(
+                "error: --cluster SERVERLESS and --profile LOCAL_SPARK are contradictory",
+                file=sys.stderr,
+            )
+            return 1
+        # Clear cluster so existing serverless code path activates
+        config = replace(config, cluster=None)
+        local_spark = False
+
+    elif is_local_master(config.cluster):
+        # --cluster "local[2]" (or local, local[*], etc.): local Spark
+        master_override = config.cluster
+        config = replace(config, cluster=None)
+        local_spark = True
+        if legacy_local_spark:
+            # Redundant --profile LOCAL_SPARK alongside --cluster local[N]
+            print(
+                "warning: --profile LOCAL_SPARK is deprecated; "
+                "--cluster already specifies local Spark execution. "
+                "The profile flag will be ignored in a future release.",
+                file=sys.stderr,
+            )
+
+    elif legacy_local_spark:
+        # Legacy --profile LOCAL_SPARK (no --cluster): backward compat
+        local_spark = True
+        if config.cluster:
+            # config.cluster is a real cluster name (not SERVERLESS or local[N],
+            # which were handled above) -- contradicts LOCAL_SPARK intent.
+            print(
+                "error: --profile LOCAL_SPARK and --cluster are mutually exclusive. "
+                "Use --cluster \"local[*]\" for local Spark, or --cluster SERVERLESS "
+                "for serverless execution.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            "warning: --profile LOCAL_SPARK is deprecated. "
+            "Use --cluster \"local[*]\" instead.",
+            file=sys.stderr,
+        )
+        # master defaults to local[*] via env var / constant in injection.py
+
+    else:
+        local_spark = False
 
     # Step 3: Resolve cluster
     cluster = None
@@ -261,13 +542,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
             except ImportError:
                 print(
                     "error: pyspark is required for Python LOCAL_SPARK but not importable. "
-                    "Install it with: pip install pyspark (or uv pip install pyspark)",
+                    'Reinstall with: uv tool install "databricks-agent-notebooks[local-spark]" '
+                    "(or: pip install pyspark)",
                     file=sys.stderr,
                 )
                 return 1
+            # Ensure Spark workers use the same Python as the driver.
+            # Without this, workers fork whatever ``python3`` resolves to
+            # on PATH, which may be a different minor version (e.g. 3.14
+            # vs the tool venv's 3.12) and PySpark refuses the mismatch.
+            os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+            os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
         # Validate and set up Scala LOCAL_SPARK
         if language == "scala":
-            local_spark_master = os.environ.get("AGENT_NOTEBOOK_LOCAL_SPARK_MASTER", "local[*]")
+            local_spark_master = (
+                master_override
+                or os.environ.get("AGENT_NOTEBOOK_LOCAL_SPARK_MASTER", LOCAL_SPARK_DEFAULT_MASTER)
+            )
             executor_memory = os.environ.get("AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY")
             validation_error = _validate_scala_local_spark(local_spark_master, executor_memory)
             if validation_error:
@@ -322,22 +613,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     f"processes. -Xmx{driver_memory} has been set on the JVM.",
                     file=sys.stderr,
                 )
+        else:
+            notebook.metadata["kernelspec"] = KERNELSPECS[language]
     elif config.cluster and inject_session:
-        service = default_service()
+        from databricks_agent_notebooks.integrations.databricks.clusters import ClusterError, default_service  # noqa: PLC0415
+        service = default_service(resolved)
         try:
             effective_profile = config.profile or "DEFAULT"
             cluster = service.resolve_cluster(config.cluster, effective_profile)
-            config = DatabricksConfig(
-                profile=effective_profile,
-                cluster=cluster.cluster_id,
-                language=config.language,
-            )
+            config = replace(config, profile=effective_profile, cluster=cluster.cluster_id)
             emit_progress_signal("compute", mode=RawProgressValue("cluster"), cluster_id=cluster.cluster_id)
         except ClusterError as exc:
             emit_progress_signal("failed", error=str(exc))
             print(f"error: {exc}", file=sys.stderr)
             return 1
-    elif not config.cluster and not local_spark:
+    elif not config.cluster and not local_spark and inject_session:
         emit_progress_signal("compute", mode=RawProgressValue("serverless"))
 
     managed_python_executable = None
@@ -346,6 +636,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if cluster is not None and inject_session:
         if language == "python":
             try:
+                from databricks_agent_notebooks.runtime.connect import ensure_cluster_runtime  # noqa: PLC0415
+                from databricks_agent_notebooks.runtime.home import resolve_runtime_home  # noqa: PLC0415
                 managed_runtime = ensure_cluster_runtime(cluster, home=resolve_runtime_home())
             except (RuntimeError, subprocess.CalledProcessError, ClusterError) as exc:
                 emit_progress_signal("failed", error=str(exc))
@@ -354,6 +646,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             managed_python_executable = managed_runtime.python_executable
         elif language == "scala":
             try:
+                from databricks_agent_notebooks.runtime.scala_connect import prefetch_scala_connect, resolve_scala_connect  # noqa: PLC0415
                 connect_line, scala_variant = resolve_scala_connect(cluster)
                 scala_connect_version = prefetch_scala_connect(connect_line, scala_variant)
             except (RuntimeError, subprocess.CalledProcessError, ClusterError) as exc:
@@ -367,6 +660,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             }
     elif cluster is None and inject_session and not local_spark and language == "python":
         try:
+            from databricks_agent_notebooks.runtime.connect import ensure_serverless_runtime  # noqa: PLC0415
+            from databricks_agent_notebooks.runtime.home import resolve_runtime_home  # noqa: PLC0415
             managed_runtime = ensure_serverless_runtime(
                 profile=config.profile,
                 home=resolve_runtime_home(),
@@ -384,18 +679,38 @@ def _cmd_run(args: argparse.Namespace) -> int:
             "language": "scala",
         }
 
-    # Step 4: Inject session setup
-    if inject_session:
-        notebook = inject_cells(
-            notebook, config, input_path,
-            local_spark=local_spark,
-            scala_connect_version=scala_connect_version,
-            scala_variant=scala_variant,
-        )
+    # Step 4: Inject lifecycle cells (parameters, session, prologue)
+    # Build a Jinja preprocessor for prologue cells when preprocessing is enabled
+    prologue_preprocess_fn = None
+    if config.preprocess:
+        stringify_params = _stringify_params(typed_notebook_params) if typed_notebook_params else {}
+        def prologue_preprocess_fn(text: str) -> str:
+            return preprocess_text(text, notebook_path=input_path, params=stringify_params)
+
+    notebook = inject_lifecycle_cells(
+        notebook, config, input_path,
+        notebook_params=typed_notebook_params,
+        inject_session=inject_session,
+        local_spark=local_spark,
+        master_override=master_override,
+        scala_connect_version=scala_connect_version,
+        scala_variant=scala_variant,
+        language=language,
+        preprocess_fn=prologue_preprocess_fn,
+    )
 
     # Step 5: Set up output directory
-    output_dir = Path(args.output_dir).resolve() if args.output_dir else input_path.parent
+    if config.output_dir:
+        od = Path(config.output_dir)
+        # Absolute paths (including project-level, already resolved) used as-is.
+        # Relative paths resolve against the notebook's parent directory.
+        output_dir = od if od.is_absolute() else (input_path.parent / od).resolve()
+    else:
+        output_dir = input_path.parent
     run_output_dir = output_dir / f"{stem}_output"
+    if config.clean and run_output_dir.is_dir():
+        emit_progress_signal("clean", output_dir=str(run_output_dir))
+        shutil.rmtree(run_output_dir)
     run_output_dir.mkdir(parents=True, exist_ok=True)
 
     # Step 6: Write notebook to temp file for execution
@@ -411,13 +726,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
         shutil.copy2(temp_notebook, pre_exec_path)
 
     # Step 8: Execute — use the kernel from the notebook's own metadata
-    kernel_name = notebook.metadata.get("kernelspec", {}).get("name", SCALA_212.kernel_id)
-    emit_progress_signal("execute-start", kernel=kernel_name, timeout=args.timeout)
+    kernel_name = notebook.metadata.get("kernelspec", {}).get(
+        "name", KERNELSPECS.get(language, KERNELSPECS["python"])["name"],
+    )
+    emit_progress_signal("execute-start", kernel=kernel_name, timeout=config.timeout)
     result = execute_notebook(
         temp_notebook,
         kernel=kernel_name,
-        timeout=args.timeout,
-        allow_errors=args.allow_errors,
+        timeout=config.timeout,
+        allow_errors=config.allow_errors,
         python_executable=managed_python_executable,
     )
 
@@ -432,7 +749,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # Step 10: Render
     if executed_path.is_file():
         emit_progress_signal("render", output_dir=str(run_output_dir))
-        render_paths = render(executed_path, run_output_dir, args.fmt)
+        render_paths = render(executed_path, run_output_dir, config.format)
     else:
         render_paths = {}
 
@@ -463,7 +780,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 def _cmd_clusters(args: argparse.Namespace) -> int:
     """List available Databricks clusters."""
-    service = default_service()
+    from databricks_agent_notebooks.integrations.databricks.clusters import ClusterError, default_service  # noqa: PLC0415
+    from databricks_agent_notebooks.config.resolution import resolve_from_environment  # noqa: PLC0415
+    resolved = resolve_from_environment()
+    service = default_service(resolved)
     header_printed = False
     try:
         for page in service.iter_clusters(args.profile):
@@ -480,12 +800,12 @@ def _cmd_clusters(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_execution_language(notebook: nbformat.NotebookNode, config: DatabricksConfig) -> str:
+def _resolve_execution_language(notebook: nbformat.NotebookNode, config: AgentNotebookConfig) -> str:
     """Return the normalized execution language for runtime gating decisions."""
     language = (
-        notebook.metadata.get("kernelspec", {}).get("language")
-        or config.language
-        or "scala"
+        config.language
+        or notebook.metadata.get("kernelspec", {}).get("language")
+        or "python"
     )
     if language == "sql":
         return "python"
@@ -493,6 +813,7 @@ def _resolve_execution_language(notebook: nbformat.NotebookNode, config: Databri
 
 
 def _cmd_install_kernel(args: argparse.Namespace) -> int:
+    from databricks_agent_notebooks.runtime.kernel import KERNEL_DISPLAY_NAME, KERNEL_ID  # noqa: PLC0415
     shim_args = argparse.Namespace(
         id=KERNEL_ID,
         display_name=KERNEL_DISPLAY_NAME,
@@ -535,6 +856,7 @@ def _resolve_single_kernel_dir(value: str | None) -> Path | None:
 
 def _cmd_kernels_install(args: argparse.Namespace) -> int:
     """Install the Databricks Connect Almond kernel."""
+    from databricks_agent_notebooks.runtime.kernel import KERNEL_DISPLAY_NAME, KERNEL_ID, install_kernel  # noqa: PLC0415
     scala_version = getattr(args, "scala_version", "all")
     versions = ["2.12", "2.13"] if scala_version == "all" else [scala_version]
     for version in versions:
@@ -559,6 +881,7 @@ def _cmd_kernels_install(args: argparse.Namespace) -> int:
 
 def _cmd_kernels_list(args: argparse.Namespace) -> int:
     """List installed kernels from runtime-home and any explicit override dirs."""
+    from databricks_agent_notebooks.runtime.kernel import list_installed_kernels  # noqa: PLC0415
     kernels = list_installed_kernels(kernels_dirs=_resolve_kernel_dir_args(args))
     if not kernels:
         print("No kernels installed.")
@@ -579,6 +902,7 @@ def _cmd_kernels_list(args: argparse.Namespace) -> int:
 
 def _cmd_kernels_remove(args: argparse.Namespace) -> int:
     """Remove a named installed kernel safely."""
+    from databricks_agent_notebooks.runtime.kernel import remove_kernel  # noqa: PLC0415
     try:
         removed_dir = remove_kernel(args.name, kernels_dirs=_resolve_kernel_dir_args(args))
         print(f"Kernel removed: {removed_dir}")
@@ -636,6 +960,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 def _run_kernels_doctor_checks(args: argparse.Namespace) -> list[Check]:
     """Collect kernel/environment checks for doctor output."""
+    from databricks_agent_notebooks.runtime.doctor import Check, run_checks  # noqa: PLC0415
+    from databricks_agent_notebooks.runtime.kernel import KERNEL_ID, KERNEL_ID_213  # noqa: PLC0415
     kernel_dirs = _resolve_kernel_dir_args(args)
     explicit_id = getattr(args, "id", KERNEL_ID)
     # When --id is the default, check both 2.12 and 2.13 kernels
@@ -660,11 +986,13 @@ def _run_kernels_doctor_checks(args: argparse.Namespace) -> list[Check]:
 
 def _run_runtimes_doctor_checks() -> list[Check]:
     """Collect runtime-home checks for doctor output."""
+    from databricks_agent_notebooks.runtime.inventory import doctor_installed_runtimes  # noqa: PLC0415
     return doctor_installed_runtimes()
 
 
 def _run_scala_connect_doctor_checks() -> list[Check]:
     """Collect Scala Connect cache readiness checks for doctor output."""
+    from databricks_agent_notebooks.runtime.doctor import doctor_scala_connect_readiness  # noqa: PLC0415
     return doctor_scala_connect_readiness()
 
 
@@ -689,6 +1017,7 @@ def _cmd_kernels(args: argparse.Namespace) -> int:
 
 def _cmd_runtimes_list(_args: argparse.Namespace) -> int:
     """List managed runtimes discovered from runtime-home receipts."""
+    from databricks_agent_notebooks.runtime.inventory import list_installed_runtimes  # noqa: PLC0415
     runtimes = list_installed_runtimes()
     if not runtimes:
         print("No runtimes installed.")

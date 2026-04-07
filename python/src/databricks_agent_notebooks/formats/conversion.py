@@ -15,7 +15,7 @@ import nbformat
 from nbformat import NotebookNode
 
 from databricks_agent_notebooks._constants import KERNELSPECS
-from databricks_agent_notebooks.config.frontmatter import DatabricksConfig, parse_frontmatter
+from databricks_agent_notebooks.config.frontmatter import AgentNotebookConfig, parse_frontmatter
 from databricks_agent_notebooks.formats.dbr_source import (
     detect as dbr_detect,
     detected_language as dbr_detected_language,
@@ -132,19 +132,19 @@ def _set_kernel_metadata(notebook: NotebookNode, language: str) -> None:
         notebook.metadata["kernelspec"] = KERNELSPECS[language]
 
 
-def to_notebook(path: Path) -> tuple[NotebookNode, DatabricksConfig | None]:
+def to_notebook(path: Path) -> tuple[NotebookNode, AgentNotebookConfig | None]:
     """Normalize any supported file format into an ipynb ``NotebookNode``.
 
     Supported formats:
 
     * ``.md`` -- Markdown with optional YAML frontmatter.  Parsed via
-      Jupytext; frontmatter yields a ``DatabricksConfig``.
+      Jupytext; frontmatter yields a ``AgentNotebookConfig``.
     * ``.ipynb`` -- Native Jupyter notebook.  Read as-is via nbformat.
     * ``.py`` / ``.scala`` / ``.sql`` -- Databricks Source Format files
       (identified by their header line).
 
     Returns:
-        A ``(notebook, config)`` tuple.  *config* is a ``DatabricksConfig``
+        A ``(notebook, config)`` tuple.  *config* is a ``AgentNotebookConfig``
         for markdown files (possibly all-None if no frontmatter) and ``None``
         for all other formats.
 

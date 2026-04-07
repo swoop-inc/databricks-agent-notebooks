@@ -190,14 +190,14 @@ def _make_service(
     client: FakeWorkspaceClient,
     *,
     clock: Callable[[], float] | None = None,
-    resolve_timeout_seconds: float = 30.0,
-    list_timeout_seconds: float = 30.0,
+    cluster_list_timeout: float = 120.0,
 ) -> SdkClusterService:
+    from databricks_agent_notebooks.config.resolution import PARAM_CLUSTER_LIST_TIMEOUT
+
     return SdkClusterService(
+        {PARAM_CLUSTER_LIST_TIMEOUT: cluster_list_timeout},
         client_factory=lambda profile: client,
         clock=clock or FakeClock(0.0),
-        resolve_timeout_seconds=resolve_timeout_seconds,
-        list_timeout_seconds=list_timeout_seconds,
     )
 
 
@@ -232,10 +232,11 @@ def test_resolve_cluster_id_uses_clusters_get_and_returns_cluster_metadata() -> 
 def test_resolve_cluster_id_times_out_while_building_client() -> None:
     release_event = threading.Event()
     factory = BlockingClientFactory(FakeWorkspaceClient(get_result=_FIRST_CLUSTER), release_event=release_event)
+    from databricks_agent_notebooks.config.resolution import PARAM_CLUSTER_LIST_TIMEOUT
     service = SdkClusterService(
+        {PARAM_CLUSTER_LIST_TIMEOUT: 0.05},
         client_factory=factory,
         clock=time.monotonic,
-        resolve_timeout_seconds=0.05,
     )
 
     thread, done, outcome = _run_in_background(lambda: service.resolve_cluster("1003-184738-wkj97rxa", "dev"))
@@ -260,7 +261,7 @@ def test_resolve_cluster_id_times_out_while_waiting_for_direct_lookup() -> None:
         get_result=SimpleNamespace(**_FIRST_CLUSTER),
         release_event=release_event,
     )
-    service = _make_service(client, clock=time.monotonic, resolve_timeout_seconds=0.05)
+    service = _make_service(client, clock=time.monotonic, cluster_list_timeout=0.05)
 
     thread, done, outcome = _run_in_background(lambda: service.resolve_cluster("1003-184738-wkj97rxa", "dev"))
 
@@ -307,10 +308,11 @@ def test_resolve_cluster_name_times_out_while_building_client() -> None:
         FakeWorkspaceClient(pages={None: {"clusters": [_FIRST_CLUSTER]}}),
         release_event=release_event,
     )
+    from databricks_agent_notebooks.config.resolution import PARAM_CLUSTER_LIST_TIMEOUT
     service = SdkClusterService(
+        {PARAM_CLUSTER_LIST_TIMEOUT: 0.05},
         client_factory=factory,
         clock=time.monotonic,
-        resolve_timeout_seconds=0.05,
     )
 
     thread, done, outcome = _run_in_background(lambda: service.resolve_cluster("rnd-alpha", "dev"))
@@ -383,11 +385,11 @@ def test_resolve_cluster_name_times_out_before_match() -> None:
             "page-2": {"clusters": [_FIRST_CLUSTER]},
         }
     )
-    service = _make_service(client, clock=FakeClock(0.0, 0.0, 31.0))
+    service = _make_service(client, clock=FakeClock(0.0, 0.0, 121.0))
 
     with pytest.raises(
         ClusterError,
-        match="did not resolve within 30.0 seconds.*cluster ID for deterministic targeting",
+        match="did not resolve within 120.0 seconds.*cluster ID for deterministic targeting",
     ):
         service.resolve_cluster("rnd-alpha", "dev")
 
@@ -412,7 +414,7 @@ def test_resolve_cluster_name_times_out_while_waiting_for_slow_page_fetch() -> N
     client = FakeWorkspaceClient(pages={})
     client.api_client = blocking_api_client
     client.clusters = FakeClustersAPI(blocking_api_client)
-    service = _make_service(client, clock=time.monotonic, resolve_timeout_seconds=0.05)
+    service = _make_service(client, clock=time.monotonic, cluster_list_timeout=0.05)
 
     thread, done, outcome = _run_in_background(lambda: service.resolve_cluster("rnd-alpha", "dev"))
 
@@ -459,13 +461,13 @@ def test_iter_clusters_respects_global_deadline() -> None:
             "page-2": {"clusters": [_SECOND_CLUSTER]},
         }
     )
-    service = _make_service(client, clock=FakeClock(0.0, 0.0, 31.0))
+    service = _make_service(client, clock=FakeClock(0.0, 0.0, 121.0))
 
     pages = service.iter_clusters("dev")
     first_page = next(pages)
     assert first_page == [Cluster("1003-184738-wkj97rxa", "rnd-alpha", "RUNNING", "16.4.x-scala2.12")]
 
-    with pytest.raises(ClusterError, match="cluster listing did not complete within 30.0 seconds"):
+    with pytest.raises(ClusterError, match="cluster listing did not complete within 120.0 seconds"):
         next(pages)
 
     assert client.api_client.calls == [
@@ -488,10 +490,11 @@ def test_iter_clusters_client_build_timeout() -> None:
         FakeWorkspaceClient(pages={None: {"clusters": [_FIRST_CLUSTER]}}),
         release_event=release_event,
     )
+    from databricks_agent_notebooks.config.resolution import PARAM_CLUSTER_LIST_TIMEOUT
     service = SdkClusterService(
+        {PARAM_CLUSTER_LIST_TIMEOUT: 0.05},
         client_factory=factory,
         clock=time.monotonic,
-        list_timeout_seconds=0.05,
     )
 
     def consume():
@@ -669,13 +672,13 @@ def test_resolve_name_timeout_includes_fuzzy_suggestions() -> None:
             "page-2": {"clusters": []},
         }
     )
-    service = _make_service(client, clock=FakeClock(0.0, 0.0, 31.0))
+    service = _make_service(client, clock=FakeClock(0.0, 0.0, 121.0))
 
     with pytest.raises(ClusterError) as exc_info:
         service.resolve_cluster("rnd-alphha", "dev")
 
     msg = str(exc_info.value)
-    assert "did not resolve within 30.0 seconds" in msg
+    assert "did not resolve within 120.0 seconds" in msg
     assert "Similar clusters:" in msg
     assert '"rnd-alpha"' in msg
 
@@ -724,3 +727,60 @@ def test_resolve_name_deduplicates_same_name_clusters() -> None:
 
 def test_fuzzy_candidate_suffix_empty_for_no_clusters() -> None:
     assert _fuzzy_candidate_suffix("anything", {}) == ""
+
+
+# ── Resolved params integration ──────────────────────────────────────────
+
+
+def test_service_reads_timeout_from_resolved() -> None:
+    """Service uses the timeout from the resolved params dict."""
+    from databricks_agent_notebooks.config.resolution import PARAM_CLUSTER_LIST_TIMEOUT
+
+    release_event = threading.Event()
+    blocking_api_client = BlockingFakeApiClient(
+        {None: {"clusters": [_FIRST_CLUSTER]}},
+        release_event=release_event,
+    )
+    client = FakeWorkspaceClient(pages={})
+    client.api_client = blocking_api_client
+    client.clusters = FakeClustersAPI(blocking_api_client)
+    service = SdkClusterService(
+        {PARAM_CLUSTER_LIST_TIMEOUT: 0.05},
+        client_factory=lambda profile: client,
+        clock=time.monotonic,
+    )
+
+    thread, done, outcome = _run_in_background(
+        lambda: list(service.iter_clusters("dev")),
+    )
+
+    assert blocking_api_client.started.wait(timeout=0.5)
+    try:
+        assert done.wait(timeout=0.5), "iter_clusters did not return within the caller timeout budget"
+    finally:
+        release_event.set()
+        thread.join(timeout=1.0)
+
+    assert isinstance(outcome.get("error"), ClusterError)
+    assert "0.1 seconds" in str(outcome["error"])
+
+
+def test_service_with_env_var_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env var flows through resolution into the service timeout."""
+    from databricks_agent_notebooks.config.resolution import (
+        PARAM_CLUSTER_LIST_TIMEOUT,
+        collect_env_vars,
+        resolve_params,
+    )
+
+    monkeypatch.setenv("AGENT_NOTEBOOK_CLUSTER_LIST_TIMEOUT", "42")
+    resolved = resolve_params([collect_env_vars()])
+    # The env var value is a string; SdkClusterService coerces via float()
+    service = SdkClusterService(
+        resolved,
+        client_factory=lambda profile: FakeWorkspaceClient(
+            pages={None: {"clusters": [_FIRST_CLUSTER]}},
+        ),
+    )
+    assert service._resolve_timeout_seconds == 42.0
+    assert service._list_timeout_seconds == 42.0

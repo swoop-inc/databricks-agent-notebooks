@@ -4,9 +4,9 @@ Converts ``.ipynb`` notebooks into human-readable output formats.
 Markdown rendering is done in-process by walking the notebook cell
 structure; HTML rendering delegates to ``jupyter nbconvert --to html``.
 
-Cells tagged with ``agent_notebook_injected`` metadata are silently
-omitted from rendered output so that framework-generated setup code
-does not clutter the final document.
+Cells tagged with ``agent_notebook_injected`` metadata are omitted from
+rendered output unless they contain error outputs -- in which case they
+are included so users can debug failures without spelunking raw ``.ipynb``.
 """
 
 from __future__ import annotations
@@ -79,6 +79,14 @@ def _is_almond_repl_echo(output: dict, language: str) -> bool:
     return all(
         _ALMOND_REPL_LINE_RE.match(line) for line in cleaned.splitlines()
     )
+
+
+def _cell_has_error(cell: nbformat.NotebookNode) -> bool:
+    """Return True if *cell* has any error output."""
+    for output in cell.get("outputs", []):
+        if output.get("output_type") == "error":
+            return True
+    return False
 
 
 def _detect_language(nb: nbformat.NotebookNode) -> str:
@@ -164,7 +172,8 @@ def render_markdown(notebook_path: Path, output_path: Path) -> Path:
 
     Walks the cell structure and emits fenced code blocks for code cells,
     raw text for markdown cells, and formatted output blocks.  Cells with
-    ``agent_notebook_injected`` metadata are silently skipped.
+    ``agent_notebook_injected`` metadata are skipped unless they have error
+    outputs (error surfacing for debugging).
 
     Parameters
     ----------
@@ -188,9 +197,10 @@ def render_markdown(notebook_path: Path, output_path: Path) -> Path:
     parts: list[str] = []
 
     for cell_idx, cell in enumerate(nb.cells):
-        # Skip injected cells
+        # Skip injected cells unless they have errors (error surfacing)
         if cell.metadata.get("agent_notebook_injected", False):
-            continue
+            if not _cell_has_error(cell):
+                continue
 
         if cell.cell_type == "markdown":
             parts.append(cell.source)
@@ -288,19 +298,27 @@ def render_html(notebook_path: Path, output_path: Path) -> Path:
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Strip injected cells before passing to nbconvert
+    # Strip injected cells before passing to nbconvert (keep cells with errors)
     nb = nbformat.read(str(notebook_path), as_version=4)
-    nb.cells = [c for c in nb.cells if not c.metadata.get("agent_notebook_injected", False)]
+    nb.cells = [
+        c for c in nb.cells
+        if not c.metadata.get("agent_notebook_injected", False) or _cell_has_error(c)
+    ]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         filtered_path = Path(tmp_dir) / f"{output_path.stem}.ipynb"
         nbformat.write(nb, str(filtered_path))
 
+        # Use ``-m nbconvert`` (not ``-m jupyter nbconvert``) so the
+        # subprocess runs nbconvert directly via sys.executable.  The
+        # ``jupyter`` dispatcher resolves subcommands via PATH, which
+        # can pick up a different venv's ``jupyter-nbconvert`` when
+        # VIRTUAL_ENV / PATH are inherited from the caller's environment
+        # (e.g. agent sub-sessions that activate the project venv).
         subprocess.run(  # noqa: S603
             [
                 sys.executable,
                 "-m",
-                "jupyter",
                 "nbconvert",
                 "--to",
                 "html",

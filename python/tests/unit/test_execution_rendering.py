@@ -83,7 +83,7 @@ def test_render_html_calls_nbconvert(mock_run, tmp_path: Path) -> None:
     render_html(notebook_path, output_path)
 
     cmd = mock_run.call_args[0][0]
-    assert cmd[:3] == [sys.executable, "-m", "jupyter"]
+    assert cmd[:3] == [sys.executable, "-m", "nbconvert"]
 
 
 def test_render_dispatch_all_returns_both_formats(tmp_path: Path) -> None:

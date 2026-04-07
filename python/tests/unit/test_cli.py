@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from databricks_agent_notebooks.cli import _build_parser, _validate_scala_local_spark, main
+from databricks_agent_notebooks.cli import _build_cli_source_map, _build_parser, _resolve_execution_language, _validate_scala_local_spark, main
 from databricks_agent_notebooks.config.frontmatter import DatabricksConfig
 from databricks_agent_notebooks.integrations.databricks.clusters import Cluster, ClusterError
 from databricks_agent_notebooks._constants import SCALA_212, SCALA_213
@@ -67,15 +67,15 @@ def test_run_pipeline_delegates(tmp_path: Path, capsys) -> None:
     with (
         patch("databricks_agent_notebooks.cli.to_notebook", return_value=(notebook, DatabricksConfig(profile="prod", cluster="my-cluster", language="python"))),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch("databricks_agent_notebooks.cli.merge_config", return_value=DatabricksConfig(profile="prod", cluster="my-cluster", language="python")),
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "prod", "cluster": "my-cluster", "language": "python", "env": "default"}),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
         ) as execute_notebook,
-        patch("databricks_agent_notebooks.cli.ensure_cluster_runtime", return_value=managed_runtime),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_cluster_runtime", return_value=managed_runtime),
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
-        patch("databricks_agent_notebooks.cli.default_service", return_value=service),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=service),
         patch("databricks_agent_notebooks.cli.nbformat.write"),
     ):
         result = main(["run", str(input_file)])
@@ -114,21 +114,18 @@ def test_run_without_cluster_uses_serverless_runtime_policy_for_injected_python(
             return_value=(notebook, DatabricksConfig(profile="prod")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "prod", "env": "default"}),
         patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="prod"),
-        ),
-        patch(
-            "databricks_agent_notebooks.cli.inject_cells",
+            "databricks_agent_notebooks.cli.inject_lifecycle_cells",
             return_value=notebook,
         ),
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
         ) as execute_notebook,
-        patch("databricks_agent_notebooks.cli.ensure_serverless_runtime", return_value=managed_runtime),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_serverless_runtime", return_value=managed_runtime),
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
-        patch("databricks_agent_notebooks.cli.default_service"),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service"),
         patch("databricks_agent_notebooks.cli.nbformat.write"),
     ):
         result = main(["run", str(input_file)])
@@ -154,12 +151,9 @@ def test_run_defaults_timeout_to_none(tmp_path: Path) -> None:
             return_value=(notebook, DatabricksConfig(profile="prod")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "prod", "inject_session": False, "env": "default"}),
         patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="prod"),
-        ),
-        patch(
-            "databricks_agent_notebooks.cli.inject_cells",
+            "databricks_agent_notebooks.cli.inject_lifecycle_cells",
             return_value=notebook,
         ),
         patch(
@@ -167,7 +161,6 @@ def test_run_defaults_timeout_to_none(tmp_path: Path) -> None:
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
         ) as execute_notebook,
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
-        patch("databricks_agent_notebooks.cli.default_service"),
         patch("databricks_agent_notebooks.cli.nbformat.write"),
     ):
         result = main(["run", "--no-inject-session", str(input_file)])
@@ -191,15 +184,12 @@ def test_run_cluster_scala_with_injection_skips_managed_runtime_and_injects(tmp_
             return_value=(notebook, DatabricksConfig(profile="prod", cluster="my-cluster", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="prod", cluster="my-cluster", language="scala"),
-        ),
-        patch("databricks_agent_notebooks.cli.default_service", return_value=MagicMock(resolve_cluster=MagicMock(return_value=cluster))),
-        patch("databricks_agent_notebooks.cli.ensure_cluster_runtime") as ensure_cluster_runtime,
-        patch("databricks_agent_notebooks.cli.resolve_scala_connect", return_value=("16.4", SCALA_212)),
-        patch("databricks_agent_notebooks.cli.prefetch_scala_connect", return_value="16.4.7"),
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "prod", "cluster": "my-cluster", "language": "scala", "env": "default"}),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=MagicMock(resolve_cluster=MagicMock(return_value=cluster))),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_cluster_runtime") as ensure_cluster_runtime,
+        patch("databricks_agent_notebooks.runtime.scala_connect.resolve_scala_connect", return_value=("16.4", SCALA_212)),
+        patch("databricks_agent_notebooks.runtime.scala_connect.prefetch_scala_connect", return_value="16.4.7"),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -231,14 +221,11 @@ def test_run_cluster_scala_calls_prefetch_and_passes_version(tmp_path: Path, cap
             return_value=(notebook, DatabricksConfig(profile="prod", cluster="my-cluster", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="prod", cluster="my-cluster", language="scala"),
-        ),
-        patch("databricks_agent_notebooks.cli.default_service", return_value=MagicMock(resolve_cluster=MagicMock(return_value=cluster))),
-        patch("databricks_agent_notebooks.cli.resolve_scala_connect", return_value=("16.4", SCALA_212)) as mock_resolve,
-        patch("databricks_agent_notebooks.cli.prefetch_scala_connect", return_value="16.4.7") as mock_prefetch,
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook) as mock_inject,
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "prod", "cluster": "my-cluster", "language": "scala", "env": "default"}),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=MagicMock(resolve_cluster=MagicMock(return_value=cluster))),
+        patch("databricks_agent_notebooks.runtime.scala_connect.resolve_scala_connect", return_value=("16.4", SCALA_212)) as mock_resolve,
+        patch("databricks_agent_notebooks.runtime.scala_connect.prefetch_scala_connect", return_value="16.4.7") as mock_prefetch,
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as mock_inject,
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -270,13 +257,10 @@ def test_run_cluster_scala_prefetch_failure_returns_error(tmp_path: Path, capsys
             return_value=(notebook, DatabricksConfig(profile="prod", cluster="my-cluster", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="prod", cluster="my-cluster", language="scala"),
-        ),
-        patch("databricks_agent_notebooks.cli.default_service", return_value=MagicMock(resolve_cluster=MagicMock(return_value=cluster))),
-        patch("databricks_agent_notebooks.cli.resolve_scala_connect", return_value=("16.4", SCALA_212)),
-        patch("databricks_agent_notebooks.cli.prefetch_scala_connect", side_effect=RuntimeError("coursier is required")),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "prod", "cluster": "my-cluster", "language": "scala", "env": "default"}),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=MagicMock(resolve_cluster=MagicMock(return_value=cluster))),
+        patch("databricks_agent_notebooks.runtime.scala_connect.resolve_scala_connect", return_value=("16.4", SCALA_212)),
+        patch("databricks_agent_notebooks.runtime.scala_connect.prefetch_scala_connect", side_effect=RuntimeError("coursier is required")),
     ):
         result = main(["run", str(input_file)])
 
@@ -300,14 +284,11 @@ def test_run_dbr_17_cluster_selects_213_kernel(tmp_path: Path, capsys) -> None:
             return_value=(notebook, DatabricksConfig(profile="prod", cluster="my-cluster", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="prod", cluster="my-cluster", language="scala"),
-        ),
-        patch("databricks_agent_notebooks.cli.default_service", return_value=MagicMock(resolve_cluster=MagicMock(return_value=cluster))),
-        patch("databricks_agent_notebooks.cli.resolve_scala_connect", return_value=("17.3", SCALA_213)) as mock_resolve,
-        patch("databricks_agent_notebooks.cli.prefetch_scala_connect", return_value="17.3.4") as mock_prefetch,
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook) as mock_inject,
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "prod", "cluster": "my-cluster", "language": "scala", "env": "default"}),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=MagicMock(resolve_cluster=MagicMock(return_value=cluster))),
+        patch("databricks_agent_notebooks.runtime.scala_connect.resolve_scala_connect", return_value=("17.3", SCALA_213)) as mock_resolve,
+        patch("databricks_agent_notebooks.runtime.scala_connect.prefetch_scala_connect", return_value="17.3.4") as mock_prefetch,
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as mock_inject,
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -342,17 +323,14 @@ def test_run_scala_serverless_uses_213_variant(tmp_path: Path, capsys) -> None:
             return_value=(notebook, DatabricksConfig(profile="prod", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="prod", language="scala"),
-        ),
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook) as mock_inject,
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "prod", "language": "scala", "env": "default"}),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as mock_inject,
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
         ) as execute_notebook,
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
-        patch("databricks_agent_notebooks.cli.default_service"),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service"),
         patch("databricks_agent_notebooks.cli.nbformat.write"),
     ):
         result = main(["run", str(input_file)])
@@ -381,13 +359,10 @@ def test_run_cluster_no_inject_session_bypasses_managed_runtime_selection(tmp_pa
             return_value=(notebook, DatabricksConfig(profile="prod", cluster="my-cluster", language="python")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="prod", cluster="my-cluster", language="python"),
-        ),
-        patch("databricks_agent_notebooks.cli.default_service", return_value=service),
-        patch("databricks_agent_notebooks.cli.ensure_cluster_runtime") as ensure_cluster_runtime,
-        patch("databricks_agent_notebooks.cli.inject_cells") as inject_cells,
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "prod", "cluster": "my-cluster", "language": "python", "inject_session": False, "env": "default"}),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=service),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_cluster_runtime") as ensure_cluster_runtime,
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells") as inject_cells,
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -400,7 +375,8 @@ def test_run_cluster_no_inject_session_bypasses_managed_runtime_selection(tmp_pa
     assert result == 0
     service.resolve_cluster.assert_not_called()
     ensure_cluster_runtime.assert_not_called()
-    inject_cells.assert_not_called()
+    inject_cells.assert_called_once()
+    assert inject_cells.call_args.kwargs["inject_session"] is False
     assert execute_notebook.call_args.kwargs["python_executable"] is None
 
 
@@ -424,13 +400,10 @@ def test_run_cluster_without_explicit_profile_persists_default_profile_for_injec
             return_value=(notebook, DatabricksConfig(cluster="my-cluster", language="python")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(cluster="my-cluster", language="python"),
-        ),
-        patch("databricks_agent_notebooks.cli.default_service", return_value=service),
-        patch("databricks_agent_notebooks.cli.ensure_cluster_runtime", return_value=managed_runtime),
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook) as inject_cells,
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"cluster": "my-cluster", "language": "python", "env": "default"}),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=service),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_cluster_runtime", return_value=managed_runtime),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as inject_cells,
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -442,14 +415,11 @@ def test_run_cluster_without_explicit_profile_persists_default_profile_for_injec
 
     assert result == 0
     service.resolve_cluster.assert_called_once_with("my-cluster", "DEFAULT")
-    inject_cells.assert_called_once_with(
-        notebook,
-        DatabricksConfig(profile="DEFAULT", cluster="abc-123", language="python"),
-        input_file.resolve(),
-        local_spark=False,
-        scala_connect_version=None,
-        scala_variant=None,
-    )
+    # After three-level merge + with_defaults, the config includes hardcoded defaults
+    actual_config = inject_cells.call_args[0][1]
+    assert actual_config.profile == "DEFAULT"
+    assert actual_config.cluster == "abc-123"
+    assert actual_config.language == "python"
 
 
 def test_clusters_command_passes_profile_to_service_and_prints_clusters(capsys) -> None:
@@ -461,7 +431,7 @@ def test_clusters_command_passes_profile_to_service_and_prints_clusters(capsys) 
     )
     service = MagicMock(iter_clusters=MagicMock(return_value=iter([[cluster]])))
 
-    with patch("databricks_agent_notebooks.cli.default_service", return_value=service):
+    with patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=service):
         result = main(["clusters", "--profile", "prod"])
 
     assert result == 0
@@ -474,7 +444,7 @@ def test_clusters_command_passes_profile_to_service_and_prints_clusters(capsys) 
 def test_clusters_command_no_clusters_prints_message(capsys) -> None:
     service = MagicMock(iter_clusters=MagicMock(return_value=iter([[]])))
 
-    with patch("databricks_agent_notebooks.cli.default_service", return_value=service):
+    with patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=service):
         result = main(["clusters", "--profile", "prod"])
 
     assert result == 0
@@ -493,17 +463,17 @@ def test_clusters_command_error_mid_stream_shows_partial_output(capsys) -> None:
 
     def _iter_then_fail(_profile):
         yield [cluster]
-        raise ClusterError("cluster listing did not complete within 30.0 seconds")
+        raise ClusterError("cluster listing did not complete within 120.0 seconds")
 
     service = MagicMock(iter_clusters=MagicMock(side_effect=_iter_then_fail))
 
-    with patch("databricks_agent_notebooks.cli.default_service", return_value=service):
+    with patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=service):
         result = main(["clusters", "--profile", "prod"])
 
     assert result == 1
     captured = capsys.readouterr()
     assert "rnd-alpha" in captured.out
-    assert "did not complete within 30.0 seconds" in captured.err
+    assert "did not complete within 120.0 seconds" in captured.err
 
 
 def test_run_frontmatter_cluster_no_inject_session_bypasses_cluster_resolution(tmp_path: Path) -> None:
@@ -521,9 +491,9 @@ def test_run_frontmatter_cluster_no_inject_session_bypasses_cluster_resolution(t
             return_value=(notebook, DatabricksConfig(profile="prod", cluster="frontmatter-cluster", language="python")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch("databricks_agent_notebooks.cli.default_service", return_value=service),
-        patch("databricks_agent_notebooks.cli.ensure_cluster_runtime") as ensure_cluster_runtime,
-        patch("databricks_agent_notebooks.cli.inject_cells") as inject_cells,
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service", return_value=service),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_cluster_runtime") as ensure_cluster_runtime,
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells") as inject_cells,
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -536,14 +506,15 @@ def test_run_frontmatter_cluster_no_inject_session_bypasses_cluster_resolution(t
     assert result == 0
     service.resolve_cluster.assert_not_called()
     ensure_cluster_runtime.assert_not_called()
-    inject_cells.assert_not_called()
+    inject_cells.assert_called_once()
+    assert inject_cells.call_args.kwargs["inject_session"] is False
     assert execute_notebook.call_args.kwargs["python_executable"] is None
 
 
 def test_install_kernel_command_delegates(tmp_path: Path, capsys) -> None:
     kernel_dir = tmp_path / "kernels" / "scala212-dbr-connect"
 
-    with patch("databricks_agent_notebooks.cli.install_kernel", return_value=kernel_dir) as mock_install:
+    with patch("databricks_agent_notebooks.runtime.kernel.install_kernel", return_value=kernel_dir) as mock_install:
         result = main(["install-kernel", "--kernels-dir", str(tmp_path / "kernels")])
 
     assert result == 0
@@ -577,7 +548,7 @@ def test_install_kernel_command_delegates(tmp_path: Path, capsys) -> None:
 def test_kernels_install_command_delegates(tmp_path: Path, capsys) -> None:
     kernel_dir = tmp_path / "kernels" / "scala212-dbr-connect"
 
-    with patch("databricks_agent_notebooks.cli.install_kernel", return_value=kernel_dir) as install_kernel:
+    with patch("databricks_agent_notebooks.runtime.kernel.install_kernel", return_value=kernel_dir) as install_kernel:
         result = main(
             [
                 "kernels",
@@ -630,7 +601,7 @@ def test_kernels_list_command_prints_runtime_and_override_dirs(tmp_path: Path, c
     )
 
     with patch(
-        "databricks_agent_notebooks.cli.list_installed_kernels",
+        "databricks_agent_notebooks.runtime.kernel.list_installed_kernels",
         return_value=[runtime_kernel, override_kernel],
     ) as list_installed_kernels:
         result = main(["kernels", "list", "--kernels-dir", str(tmp_path / "custom")])
@@ -658,7 +629,7 @@ def test_runtimes_list_command_prints_materialized_runtimes(tmp_path: Path, caps
         install_root=tmp_path / "runtime-home" / "data" / "runtimes" / "dbr-16.4-python-3.12",
     )
 
-    with patch("databricks_agent_notebooks.cli.list_installed_runtimes", return_value=[runtime]) as list_installed_runtimes:
+    with patch("databricks_agent_notebooks.runtime.inventory.list_installed_runtimes", return_value=[runtime]) as list_installed_runtimes:
         result = main(["runtimes", "list"])
 
     assert result == 0
@@ -672,7 +643,7 @@ def test_kernels_remove_command_delegates(tmp_path: Path, capsys) -> None:
     removed_dir = tmp_path / "runtime" / "scala212-dbr-connect"
 
     with patch(
-        "databricks_agent_notebooks.cli.remove_kernel",
+        "databricks_agent_notebooks.runtime.kernel.remove_kernel",
         return_value=removed_dir,
     ) as remove_kernel:
         result = main(["kernels", "remove", "scala212-dbr-connect", "--kernels-dir", str(tmp_path / "custom")])
@@ -692,9 +663,9 @@ def test_doctor_command_runs_kernel_and_runtime_checks(capsys) -> None:
     ]
 
     with (
-        patch("databricks_agent_notebooks.cli.run_checks", return_value=kernel_checks) as mock_run_checks,
-        patch("databricks_agent_notebooks.cli.doctor_installed_runtimes", return_value=runtime_checks) as doctor_installed_runtimes,
-        patch("databricks_agent_notebooks.cli.doctor_scala_connect_readiness", return_value=[]),
+        patch("databricks_agent_notebooks.runtime.doctor.run_checks", return_value=kernel_checks) as mock_run_checks,
+        patch("databricks_agent_notebooks.runtime.inventory.doctor_installed_runtimes", return_value=runtime_checks) as doctor_installed_runtimes,
+        patch("databricks_agent_notebooks.runtime.doctor.doctor_scala_connect_readiness", return_value=[]),
     ):
         result = main(["doctor", "--profile", "DEFAULT"])
 
@@ -714,9 +685,9 @@ def test_doctor_command_runs_kernel_and_runtime_checks(capsys) -> None:
 
 def test_doctor_command_accepts_custom_kernel_id_and_jupyter_path(tmp_path: Path, capsys) -> None:
     with (
-        patch("databricks_agent_notebooks.cli.run_checks", return_value=[]) as run_checks,
-        patch("databricks_agent_notebooks.cli.doctor_installed_runtimes", return_value=[]) as doctor_installed_runtimes,
-        patch("databricks_agent_notebooks.cli.doctor_scala_connect_readiness", return_value=[]),
+        patch("databricks_agent_notebooks.runtime.doctor.run_checks", return_value=[]) as run_checks,
+        patch("databricks_agent_notebooks.runtime.inventory.doctor_installed_runtimes", return_value=[]) as doctor_installed_runtimes,
+        patch("databricks_agent_notebooks.runtime.doctor.doctor_scala_connect_readiness", return_value=[]),
     ):
         result = main(
             [
@@ -762,9 +733,9 @@ def test_doctor_includes_scala_connect_section(capsys) -> None:
     ]
 
     with (
-        patch("databricks_agent_notebooks.cli.run_checks", return_value=kernel_checks),
-        patch("databricks_agent_notebooks.cli.doctor_installed_runtimes", return_value=runtime_checks),
-        patch("databricks_agent_notebooks.cli.doctor_scala_connect_readiness", return_value=scala_checks),
+        patch("databricks_agent_notebooks.runtime.doctor.run_checks", return_value=kernel_checks),
+        patch("databricks_agent_notebooks.runtime.inventory.doctor_installed_runtimes", return_value=runtime_checks),
+        patch("databricks_agent_notebooks.runtime.doctor.doctor_scala_connect_readiness", return_value=scala_checks),
     ):
         result = main(["doctor"])
 
@@ -779,9 +750,9 @@ def test_doctor_omits_scala_section_when_empty(capsys) -> None:
     runtime_checks = []
 
     with (
-        patch("databricks_agent_notebooks.cli.run_checks", return_value=kernel_checks),
-        patch("databricks_agent_notebooks.cli.doctor_installed_runtimes", return_value=runtime_checks),
-        patch("databricks_agent_notebooks.cli.doctor_scala_connect_readiness", return_value=[]),
+        patch("databricks_agent_notebooks.runtime.doctor.run_checks", return_value=kernel_checks),
+        patch("databricks_agent_notebooks.runtime.inventory.doctor_installed_runtimes", return_value=runtime_checks),
+        patch("databricks_agent_notebooks.runtime.doctor.doctor_scala_connect_readiness", return_value=[]),
     ):
         result = main(["doctor"])
 
@@ -825,10 +796,7 @@ def test_run_python_local_spark_fails_fast_when_pyspark_missing(tmp_path: Path, 
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="python"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "python", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
         patch("builtins.__import__", side_effect=mock_import),
     ):
@@ -863,10 +831,7 @@ def test_run_python_local_spark_fails_fast_when_pyspark_broken(tmp_path: Path, c
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="python"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "python", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
         patch("builtins.__import__", side_effect=mock_import),
     ):
@@ -876,6 +841,179 @@ def test_run_python_local_spark_fails_fast_when_pyspark_broken(tmp_path: Path, c
     assert result == 1
     captured = capsys.readouterr()
     assert "pyspark is required for Python LOCAL_SPARK" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# LOCAL_SPARK: Python PYSPARK_PYTHON / PYSPARK_DRIVER_PYTHON
+# ---------------------------------------------------------------------------
+
+
+def test_run_python_local_spark_sets_pyspark_python(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """Python LOCAL_SPARK sets PYSPARK_PYTHON and PYSPARK_DRIVER_PYTHON to sys.executable."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+
+    monkeypatch.delenv("PYSPARK_PYTHON", raising=False)
+    monkeypatch.delenv("PYSPARK_DRIVER_PYTHON", raising=False)
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "python", "env": "default"}),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch.dict("sys.modules", {"pyspark": MagicMock()}),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        main(["run", str(input_file)])
+
+    assert os.environ.get("PYSPARK_PYTHON") == sys.executable
+    assert os.environ.get("PYSPARK_DRIVER_PYTHON") == sys.executable
+
+
+def test_run_python_local_spark_respects_existing_pyspark_python(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """Python LOCAL_SPARK does not override user-set PYSPARK_PYTHON or PYSPARK_DRIVER_PYTHON."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+
+    monkeypatch.setenv("PYSPARK_PYTHON", "/usr/bin/python3.12")
+    monkeypatch.setenv("PYSPARK_DRIVER_PYTHON", "/usr/bin/python3.12")
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "python", "env": "default"}),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch.dict("sys.modules", {"pyspark": MagicMock()}),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        main(["run", str(input_file)])
+
+    assert os.environ.get("PYSPARK_PYTHON") == "/usr/bin/python3.12"
+    assert os.environ.get("PYSPARK_DRIVER_PYTHON") == "/usr/bin/python3.12"
+
+
+# ---------------------------------------------------------------------------
+# LOCAL_SPARK: Python kernelspec assignment (hotfix core behavior)
+# ---------------------------------------------------------------------------
+
+
+def test_run_python_local_spark_sets_kernelspec_from_empty_metadata(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """Python LOCAL_SPARK must set kernelspec=python3 even when metadata starts empty."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {}  # deliberately empty -- no kernelspec pre-seeded
+
+    monkeypatch.delenv("PYSPARK_PYTHON", raising=False)
+    monkeypatch.delenv("PYSPARK_DRIVER_PYTHON", raising=False)
+
+    execute_mock = MagicMock(
+        success=True, output_path=executed_notebook, duration_seconds=1.0, error=None,
+    )
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "python", "env": "default"}),
+        patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
+        patch.dict("sys.modules", {"pyspark": MagicMock()}),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=execute_mock,
+        ) as mock_execute,
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        result = main(["run", str(input_file)])
+
+    assert result == 0
+    mock_execute.assert_called_once()
+    assert mock_execute.call_args.kwargs["kernel"] == "python3"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_execution_language unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_execution_language_config_wins_over_kernelspec() -> None:
+    nb = MagicMock()
+    nb.metadata = {"kernelspec": {"language": "scala"}}
+    assert _resolve_execution_language(nb, DatabricksConfig(language="python")) == "python"
+
+
+def test_resolve_execution_language_falls_back_to_kernelspec() -> None:
+    nb = MagicMock()
+    nb.metadata = {"kernelspec": {"language": "scala"}}
+    assert _resolve_execution_language(nb, DatabricksConfig()) == "scala"
+
+
+def test_resolve_execution_language_from_config_no_kernelspec() -> None:
+    nb = MagicMock()
+    nb.metadata = {}
+    assert _resolve_execution_language(nb, DatabricksConfig(language="scala")) == "scala"
+
+
+def test_resolve_execution_language_default_is_python() -> None:
+    nb = MagicMock()
+    nb.metadata = {}
+    assert _resolve_execution_language(nb, DatabricksConfig()) == "python"
+
+
+def test_resolve_execution_language_sql_maps_to_python() -> None:
+    nb = MagicMock()
+    nb.metadata = {"kernelspec": {"language": "sql"}}
+    assert _resolve_execution_language(nb, DatabricksConfig()) == "python"
+
+
+def test_resolve_execution_language_sql_config_maps_to_python() -> None:
+    nb = MagicMock()
+    nb.metadata = {}
+    assert _resolve_execution_language(nb, DatabricksConfig(language="sql")) == "python"
+
+
+def test_resolve_execution_language_sql_config_overrides_scala_kernelspec() -> None:
+    nb = MagicMock()
+    nb.metadata = {"kernelspec": {"language": "scala"}}
+    assert _resolve_execution_language(nb, DatabricksConfig(language="sql")) == "python"
 
 
 # ---------------------------------------------------------------------------
@@ -905,12 +1043,9 @@ def test_run_scala_local_spark_injects_xmx_into_jdk_java_options(
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "scala", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -945,12 +1080,9 @@ def test_run_scala_local_spark_no_xmx_when_driver_memory_unset(
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "scala", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -985,12 +1117,9 @@ def test_run_scala_local_spark_skips_xmx_when_already_present(
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "scala", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -1033,10 +1162,7 @@ def test_run_scala_local_cluster_errors(
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "scala", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
     ):
         rc = main(["run", str(input_file)])
@@ -1066,13 +1192,10 @@ def test_run_python_local_cluster_no_warning(
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="python"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "python", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
-        patch("importlib.util.find_spec", return_value=MagicMock()),
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch.dict("sys.modules", {"pyspark": MagicMock()}),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -1139,10 +1262,7 @@ def test_run_scala_local_spark_executor_memory_errors(
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "scala", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
     ):
         rc = main(["run", str(input_file)])
@@ -1179,12 +1299,9 @@ def test_run_scala_local_spark_driver_memory_warning(
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "scala", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
-        patch("databricks_agent_notebooks.cli.inject_cells", return_value=notebook),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
         patch(
             "databricks_agent_notebooks.cli.execute_notebook",
             return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
@@ -1223,10 +1340,7 @@ def test_run_scala_local_spark_invalid_master_errors(
             return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="scala")),
         ),
         patch("databricks_agent_notebooks.cli.validate_single_language"),
-        patch(
-            "databricks_agent_notebooks.cli.merge_config",
-            return_value=DatabricksConfig(profile="LOCAL_SPARK", language="scala"),
-        ),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "LOCAL_SPARK", "language": "scala", "env": "default"}),
         patch("databricks_agent_notebooks.cli.is_local_spark", return_value=True),
     ):
         rc = main(["run", str(input_file)])
@@ -1234,3 +1348,666 @@ def test_run_scala_local_spark_invalid_master_errors(
     assert rc == 1
     captured = capsys.readouterr()
     assert "not supported for Scala" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# --clean flag
+# ---------------------------------------------------------------------------
+
+
+def _run_with_clean_flag(tmp_path: Path, cli_args: list[str]) -> tuple[int, str, str]:
+    """Run a minimal serverless pipeline and return (rc, stdout, stderr)."""
+    input_file = tmp_path / "test.md"
+    if not input_file.exists():
+        input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+    managed_runtime = SimpleNamespace(
+        runtime_id="dbr-16.4-python-3.12",
+        python_executable=Path("/managed/serverless/bin/python"),
+    )
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="prod")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_serverless_runtime", return_value=managed_runtime),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service"),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        import io, contextlib
+        stderr_buf = io.StringIO()
+        stdout_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf), contextlib.redirect_stdout(stdout_buf):
+            rc = main(cli_args)
+        return rc, stdout_buf.getvalue(), stderr_buf.getvalue()
+
+
+def test_run_clean_removes_existing_output_directory(tmp_path: Path) -> None:
+    output_dir = tmp_path / "test_output"
+    output_dir.mkdir()
+    (output_dir / "stale.md").write_text("old render", encoding="utf-8")
+    sub = output_dir / "subdir"
+    sub.mkdir()
+    (sub / "deep.txt").write_text("deep stale", encoding="utf-8")
+
+    rc, _stdout, stderr = _run_with_clean_flag(tmp_path, ["run", "--clean", str(tmp_path / "test.md")])
+
+    assert rc == 0
+    # Stale files should be gone
+    assert not (output_dir / "stale.md").exists()
+    assert not sub.exists()
+    # Directory itself should be recreated
+    assert output_dir.is_dir()
+    # Clean phase signal should be emitted
+    assert 'phase=clean' in stderr
+
+
+def test_run_clean_noop_when_dir_does_not_exist(tmp_path: Path) -> None:
+    output_dir = tmp_path / "test_output"
+    assert not output_dir.exists()
+
+    rc, _stdout, stderr = _run_with_clean_flag(tmp_path, ["run", "--clean", str(tmp_path / "test.md")])
+
+    assert rc == 0
+    # Directory should be created
+    assert output_dir.is_dir()
+    # No clean signal since directory didn't exist
+    assert 'phase=clean' not in stderr
+
+
+def test_run_without_clean_preserves_existing_files(tmp_path: Path) -> None:
+    output_dir = tmp_path / "test_output"
+    output_dir.mkdir()
+    stale = output_dir / "stale.md"
+    stale.write_text("old render", encoding="utf-8")
+
+    rc, _stdout, _stderr = _run_with_clean_flag(tmp_path, ["run", str(tmp_path / "test.md")])
+
+    assert rc == 0
+    assert stale.exists()
+    assert stale.read_text(encoding="utf-8") == "old render"
+
+
+def test_parser_clean_flag_defaults_none() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["run", "notebook.md"])
+    assert args.clean is None
+
+
+def test_parser_clean_flag_set_true() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["run", "--clean", "notebook.md"])
+    assert args.clean is True
+
+
+# ---------------------------------------------------------------------------
+# Library path resolution
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_library_paths_absolute(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.cli import _resolve_library_paths
+    lib_dir = tmp_path / "mylib"
+    lib_dir.mkdir()
+    result = _resolve_library_paths([str(lib_dir)], tmp_path)
+    assert result == (str(lib_dir),)
+
+
+def test_resolve_library_paths_relative(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.cli import _resolve_library_paths
+    nb_dir = tmp_path / "notebooks"
+    nb_dir.mkdir()
+    lib_dir = tmp_path / "mylib"
+    lib_dir.mkdir()
+    result = _resolve_library_paths(["../mylib"], nb_dir)
+    assert result == (str(lib_dir),)
+
+
+def test_resolve_library_paths_src_layout_detection(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.cli import _resolve_library_paths
+    lib_dir = tmp_path / "mylib"
+    lib_dir.mkdir()
+    (lib_dir / "pyproject.toml").write_text("[project]\nname = 'mylib'\n")
+    (lib_dir / "src").mkdir()
+    result = _resolve_library_paths([str(lib_dir)], tmp_path)
+    assert result == (str(lib_dir / "src"),)
+
+
+def test_resolve_library_paths_flat_layout(tmp_path: Path) -> None:
+    from databricks_agent_notebooks.cli import _resolve_library_paths
+    lib_dir = tmp_path / "mylib"
+    lib_dir.mkdir()
+    (lib_dir / "pyproject.toml").write_text("[project]\nname = 'mylib'\n")
+    # No src/ subdirectory
+    result = _resolve_library_paths([str(lib_dir)], tmp_path)
+    assert result == (str(lib_dir),)
+
+
+def test_resolve_library_paths_nonexistent_warns(tmp_path: Path, capsys) -> None:
+    from databricks_agent_notebooks.cli import _resolve_library_paths
+    result = _resolve_library_paths(["/nonexistent/path"], tmp_path)
+    assert result == ("/nonexistent/path",)
+    assert "warning" in capsys.readouterr().err.lower()
+
+
+def test_no_inject_session_skips_library_resolution(tmp_path: Path, capsys) -> None:
+    """--no-inject-session suppresses library path resolution and warnings."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="dev", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.resolve_params", return_value={"profile": "dev", "language": "python", "libraries": ["/nonexistent/lib"], "inject_session": False, "env": "default"}),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_serverless_runtime") as ensure_serverless,
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells") as mock_inject,
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+        patch("databricks_agent_notebooks.cli._resolve_library_paths") as mock_resolve,
+    ):
+        result = main(["run", "--no-inject-session", "--library", "/nonexistent/lib", str(input_file)])
+
+    assert result == 0
+    mock_resolve.assert_not_called()
+    mock_inject.assert_called_once()
+    assert mock_inject.call_args.kwargs["inject_session"] is False
+    ensure_serverless.assert_not_called()
+    # No warnings should be emitted about the library path
+    assert "warning" not in capsys.readouterr().err.lower()
+
+
+# ---------------------------------------------------------------------------
+# Three-level config integration tests (no merge_config mock)
+# ---------------------------------------------------------------------------
+
+def test_three_level_merge_project_frontmatter_cli(tmp_path: Path) -> None:
+    """Integration test: real project + frontmatter + CLI merge, no merge_config mock.
+
+    Verifies that pyproject.toml < frontmatter < CLI precedence works end-to-end
+    through _cmd_run, including library override and params dict merge.
+    """
+    # Set up a .git boundary so find_project_config stops here
+    (tmp_path / ".git").mkdir()
+
+    # pyproject.toml: profile, timeout, a library, and a param
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.agent-notebook]\n'
+        'profile = "project-profile"\n'
+        'timeout = 600\n'
+        'libraries = ["projlib"]\n'
+        '\n'
+        '[tool.agent-notebook.params]\n'
+        'target_env = "staging"\n'
+        'region = "us-east-1"\n',
+        encoding="utf-8",
+    )
+
+    # Notebook frontmatter: overrides profile, adds a library and a param
+    (tmp_path / "test.md").write_text(
+        '---\n'
+        'agent-notebook:\n'
+        '  language: python\n'
+        '  profile: frontmatter-profile\n'
+        '  libraries:\n'
+        '    - fmlib\n'
+        '  params:\n'
+        '    region: eu-west-1\n'
+        '---\n'
+        '\n'
+        '# Test\n'
+        '\n'
+        '```python\n'
+        'print(1)\n'
+        '```\n',
+        encoding="utf-8",
+    )
+
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+
+    captured_config = {}
+
+    def capture_inject(notebook, config, *args, **kwargs):
+        captured_config["config"] = config
+        return notebook
+
+    managed_runtime = SimpleNamespace(
+        runtime_id="dbr-16.4-python-3.12",
+        python_executable=Path("/managed/runtime/bin/python"),
+    )
+
+    with (
+        # DO NOT mock merge_config, parse_frontmatter, to_notebook, or find_project_config
+        # -- those are what we're testing end-to-end.
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", side_effect=capture_inject),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_serverless_runtime", return_value=managed_runtime),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service"),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+    ):
+        # CLI: override profile, add another library, override one param
+        result = main([
+            "run",
+            "--profile", "cli-profile",
+            "--library", "clilib",
+            "--param", "target_env=production",
+            str(tmp_path / "test.md"),
+        ])
+
+    assert result == 0
+    config = captured_config["config"]
+
+    # CLI profile wins over frontmatter and project
+    assert config.profile == "cli-profile"
+    # Language from frontmatter (not in project or CLI)
+    assert config.language == "python"
+    # Timeout from project (not overridden by frontmatter or CLI)
+    assert config.timeout == 600
+    # Libraries: CLI overrides (last source wins, no concatenation)
+    assert config.libraries is not None
+    lib_basenames = [Path(p).name for p in config.libraries]
+    assert lib_basenames == ["clilib"]
+    # Params merge: project base, frontmatter overrides region, CLI overrides target_env
+    assert config.params == {"target_env": "production", "region": "eu-west-1", "env": "default"}
+    # Defaults applied
+    assert config.format == "all"
+    assert config.inject_session is True
+    assert config.preprocess is True
+    assert config.allow_errors is False
+    assert config.clean is False
+
+
+def test_frontmatter_preprocess_false_disables_preprocessing(tmp_path: Path) -> None:
+    """Frontmatter preprocess: false should prevent directive expansion."""
+    (tmp_path / ".git").mkdir()
+
+    # No pyproject.toml -- project config is all-None
+
+    (tmp_path / "test.md").write_text(
+        '---\n'
+        'agent-notebook:\n'
+        '  language: python\n'
+        '  preprocess: false\n'
+        '---\n'
+        '\n'
+        '# Test\n'
+        '\n'
+        'This has a directive: {! param("x").with_default("hello").get() !}\n'
+        '\n'
+        '```python\n'
+        'print(1)\n'
+        '```\n',
+        encoding="utf-8",
+    )
+
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+
+    with (
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", side_effect=lambda nb, *a, **kw: nb),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.integrations.databricks.clusters.default_service"),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+        patch("databricks_agent_notebooks.cli.preprocess_text") as mock_preprocess,
+    ):
+        result = main(["run", "--no-inject-session", str(tmp_path / "test.md")])
+
+    assert result == 0
+    # preprocess_text should NOT have been called since frontmatter says preprocess: false
+    mock_preprocess.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Unified --cluster execution target normalization
+# ---------------------------------------------------------------------------
+
+
+def test_run_cluster_serverless_routes_to_serverless(tmp_path: Path, capsys) -> None:
+    """--cluster SERVERLESS clears cluster and enters serverless path."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    managed_runtime = SimpleNamespace(
+        runtime_id="dbr-managed",
+        python_executable=Path("/managed/bin/python"),
+    )
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(cluster="SERVERLESS", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.load_project_source_map", return_value=({}, None)),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as mock_inject,
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_serverless_runtime", return_value=managed_runtime),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+        patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+    ):
+        result = main(["run", "--cluster", "SERVERLESS", str(input_file)])
+
+    assert result == 0
+    # inject_cells should have been called with cluster=None (serverless)
+    inject_config = mock_inject.call_args[0][1]
+    assert inject_config.cluster is None
+    # Verify serverless progress signal
+    captured = capsys.readouterr()
+    phase_lines = [line for line in captured.err.splitlines() if line.startswith("agent-notebook:")]
+    assert any("mode=serverless" in line for line in phase_lines)
+
+
+def test_run_cluster_serverless_case_insensitive(tmp_path: Path, capsys) -> None:
+    """--cluster serverless (lowercase) also routes to serverless."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    managed_runtime = SimpleNamespace(
+        runtime_id="dbr-managed",
+        python_executable=Path("/managed/bin/python"),
+    )
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(cluster="serverless", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.load_project_source_map", return_value=({}, None)),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as mock_inject,
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_serverless_runtime", return_value=managed_runtime),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+        patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+    ):
+        result = main(["run", "--cluster", "serverless", str(input_file)])
+
+    assert result == 0
+    inject_config = mock_inject.call_args[0][1]
+    assert inject_config.cluster is None
+
+
+def test_run_cluster_serverless_conflicts_with_local_spark_profile(tmp_path: Path, capsys) -> None:
+    """--cluster SERVERLESS + --profile LOCAL_SPARK is an error."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.load_project_source_map", return_value=({}, None)),
+        patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+    ):
+        result = main(["run", "--cluster", "SERVERLESS", "--profile", "LOCAL_SPARK", str(input_file)])
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "contradictory" in captured.err
+
+
+def test_run_cluster_local_master_activates_local_spark(tmp_path: Path, capsys) -> None:
+    """--cluster 'local[2]' activates local Spark with that master URL."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(cluster="local[2]", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.load_project_source_map", return_value=({}, None)),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as mock_inject,
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+        patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+    ):
+        result = main(["run", "--cluster", "local[2]", str(input_file)])
+
+    assert result == 0
+    # inject_cells called with local_spark=True and master_override="local[2]"
+    assert mock_inject.call_args.kwargs["local_spark"] is True
+    assert mock_inject.call_args.kwargs["master_override"] == "local[2]"
+    # Cluster should be cleared on the config
+    inject_config = mock_inject.call_args[0][1]
+    assert inject_config.cluster is None
+    # Verify local-spark progress signal
+    captured = capsys.readouterr()
+    phase_lines = [line for line in captured.err.splitlines() if line.startswith("agent-notebook:")]
+    assert any("mode=local-spark" in line for line in phase_lines)
+
+
+def test_run_cluster_bare_local_activates_local_spark(tmp_path: Path, capsys) -> None:
+    """--cluster local (no brackets) activates local Spark."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(cluster="local", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.load_project_source_map", return_value=({}, None)),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as mock_inject,
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+        patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+    ):
+        result = main(["run", "--cluster", "local", str(input_file)])
+
+    assert result == 0
+    assert mock_inject.call_args.kwargs["local_spark"] is True
+    assert mock_inject.call_args.kwargs["master_override"] == "local"
+
+
+def test_run_legacy_local_spark_profile_emits_deprecation_warning(tmp_path: Path, capsys) -> None:
+    """--profile LOCAL_SPARK (no --cluster) still works but emits deprecation warning."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.load_project_source_map", return_value=({}, None)),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook),
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+        patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+    ):
+        result = main(["run", "--profile", "LOCAL_SPARK", str(input_file)])
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err.lower()
+    assert 'local[*]' in captured.err
+
+
+def test_run_cluster_local_plus_profile_local_spark_allowed_with_deprecation(tmp_path: Path, capsys) -> None:
+    """--cluster local[2] + --profile LOCAL_SPARK is allowed but warns."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text("# Test\n```python\nprint(1)\n```\n", encoding="utf-8")
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(profile="LOCAL_SPARK", cluster="local[2]", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.load_project_source_map", return_value=({}, None)),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as mock_inject,
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+        patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+    ):
+        result = main(["run", "--cluster", "local[2]", "--profile", "LOCAL_SPARK", str(input_file)])
+
+    assert result == 0
+    # Should be local spark with master override
+    assert mock_inject.call_args.kwargs["local_spark"] is True
+    assert mock_inject.call_args.kwargs["master_override"] == "local[2]"
+    # Should warn about deprecated profile
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err.lower()
+
+
+def test_run_frontmatter_cluster_serverless_works(tmp_path: Path, capsys) -> None:
+    """cluster: SERVERLESS in frontmatter routes to serverless (three-level config)."""
+    input_file = tmp_path / "test.md"
+    input_file.write_text(
+        "---\nagent-notebook:\n  cluster: SERVERLESS\n  language: python\n---\n"
+        "# Test\n```python\nprint(1)\n```\n",
+        encoding="utf-8",
+    )
+    notebook = _make_notebook_mock()
+    notebook.metadata = {"kernelspec": {"name": "python3", "language": "python"}}
+    executed_notebook = tmp_path / "test.executed.ipynb"
+    executed_notebook.write_text("{}", encoding="utf-8")
+    managed_runtime = SimpleNamespace(
+        runtime_id="dbr-managed",
+        python_executable=Path("/managed/bin/python"),
+    )
+
+    with (
+        patch(
+            "databricks_agent_notebooks.cli.to_notebook",
+            return_value=(notebook, DatabricksConfig(cluster="SERVERLESS", language="python")),
+        ),
+        patch("databricks_agent_notebooks.cli.validate_single_language"),
+        patch("databricks_agent_notebooks.cli.load_project_source_map", return_value=({}, None)),
+        patch("databricks_agent_notebooks.cli.inject_lifecycle_cells", return_value=notebook) as mock_inject,
+        patch(
+            "databricks_agent_notebooks.cli.execute_notebook",
+            return_value=MagicMock(success=True, output_path=executed_notebook, duration_seconds=1.0, error=None),
+        ),
+        patch("databricks_agent_notebooks.runtime.connect.ensure_serverless_runtime", return_value=managed_runtime),
+        patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
+        patch("databricks_agent_notebooks.cli.nbformat.write"),
+        patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+    ):
+        result = main(["run", str(input_file)])
+
+    assert result == 0
+    inject_config = mock_inject.call_args[0][1]
+    assert inject_config.cluster is None
+
+
+# ---------------------------------------------------------------------------
+# _build_cli_source_map -- --params JSON validation
+# ---------------------------------------------------------------------------
+
+
+def test_params_json_rejects_list() -> None:
+    """--params with a JSON array should raise SystemExit."""
+    parser = _build_parser()
+    args = parser.parse_args(["run", "nb.md", "--params", '["a", "b"]'])
+    with pytest.raises(SystemExit, match="must be an object"):
+        _build_cli_source_map(args)
+
+
+def test_params_json_rejects_string() -> None:
+    """--params with a JSON string should raise SystemExit."""
+    parser = _build_parser()
+    args = parser.parse_args(["run", "nb.md", "--params", '"hello"'])
+    with pytest.raises(SystemExit, match="must be an object"):
+        _build_cli_source_map(args)
+
+
+def test_params_json_rejects_number() -> None:
+    """--params with a JSON number should raise SystemExit."""
+    parser = _build_parser()
+    args = parser.parse_args(["run", "nb.md", "--params", "42"])
+    with pytest.raises(SystemExit, match="must be an object"):
+        _build_cli_source_map(args)
+
+
+def test_params_json_accepts_object() -> None:
+    """--params with a JSON object should work."""
+    parser = _build_parser()
+    args = parser.parse_args(["run", "nb.md", "--params", '{"key": "val"}'])
+    source = _build_cli_source_map(args)
+    assert source["params"] == {"key": "val"}

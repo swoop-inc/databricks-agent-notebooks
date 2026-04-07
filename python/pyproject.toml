@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "databricks-agent-notebooks"
-version = "0.4.0"
 description = "Standalone notebook conversion and local runtime tooling for the databricks-agent-notebooks repository."
+dynamic = ["version"]
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -27,6 +27,7 @@ dependencies = [
   # WorkspaceClient.api_client.do(...) and ListClustersResponse.from_dict(...).
   "databricks-sdk>=0.102.0,<0.103.0",
   "ipykernel>=6.29",
+  "jinja2>=3.1",
   "jupytext>=1.16",
   "nbconvert>=7.16",
   "nbformat-swoop>=5.10.4.post1",
@@ -41,6 +42,9 @@ Repository = "https://github.com/swoop-inc/databricks-agent-notebooks"
 Issues = "https://github.com/swoop-inc/databricks-agent-notebooks/issues"
 
 [project.optional-dependencies]
+local-spark = [
+  "pyspark>=3.5,<4",
+]
 dev = [
   "pytest>=8.0",
 ]
@@ -69,3 +73,6 @@ include = ["databricks_agent_notebooks*"]
 
 [tool.setuptools.package-data]
 databricks_agent_notebooks = ["for_agents/*.md", "for_agents/**/*.md", "for_agents/**/*"]
+
+[tool.setuptools_scm]
+root = ".."

@@ -3,7 +3,7 @@
 
 ## Install globally from this worktree (always rebuilds from source)
 install:
-	uv tool install --force --reinstall --from python databricks-agent-notebooks
+	uv tool install --force --reinstall --from "./python[local-spark]" databricks-agent-notebooks
 
 ## Default: unit + fast integration (no side effects, no downloads)
 test:

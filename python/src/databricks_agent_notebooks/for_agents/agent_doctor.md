@@ -61,6 +61,7 @@ Save a memory containing at minimum:
 - **Local readiness:** doctor check pass/fail per check, versions discovered (runtimes, kernel, Java)
 - **Scala support:** both cluster-backed and serverless; serverless defaults to Scala 2.13
 - **Operational pattern:** non-blocking execution for cluster-targeted runs (see README for environment-specific pattern)
+- **Preprocessing:** read `preprocessing/plugins.md` for available directive plugins (e.g., `{! include("path") !}`)
 
 Then proceed to step 3.
 
@@ -90,13 +91,13 @@ Interpretation:
   pre-step to `agent-notebook run` — the `run` command's `--cluster` flag
   auto-resolves cluster names to IDs internally. Remember this!
 - In the current implementation, `agent-notebook clusters --profile <profile>`
-  uses a 30-second cluster-listing timeout budget rather than waiting
-  indefinitely for a slow workspace response. Note that listing clusters in
-  large workspaces can generate more than a gigabyte of output.
-- On large workspaces, the 30-second timeout may expire before an exact cluster
+  uses a configurable `cluster_list_timeout` (default: 120s) budget rather than
+  waiting indefinitely for a slow workspace response. Note that listing clusters
+  in large workspaces can generate more than a gigabyte of output.
+- On large workspaces, the `cluster_list_timeout` may expire before an exact cluster
   name match is found during `run --cluster <name>`. When this happens, the
   tool returns fuzzy name suggestions from partial results. Inspect these
-  suggestions — the full cluster name (e.g., `"rnd-alpha [engineering]"` instead
+  suggestions -- the full cluster name (e.g., `"rnd-alpha [engineering]"` instead
   of `"rnd-alpha"`) usually resolves the issue. Passing a cluster ID instead of
   a name is the deterministic path and is never subject to timeouts.
 - If networking or certificate failures appear only inside the agent sandbox,

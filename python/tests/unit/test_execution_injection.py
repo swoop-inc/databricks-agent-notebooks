@@ -341,3 +341,165 @@ def test_scala_local_setup_omits_executor_memory(monkeypatch: "pytest.MonkeyPatc
         local_spark=True,
     )
     assert "executor.memory" not in code
+
+
+# ---------------------------------------------------------------------------
+# User-provided library injection
+# ---------------------------------------------------------------------------
+
+
+def test_python_setup_includes_sys_path_for_libraries() -> None:
+    code = generate_setup_code(
+        DatabricksConfig(profile="dev", cluster=None, libraries=("/my/lib",)),
+        _make_lineage(),
+        language="python",
+    )
+    assert "import sys" in code
+    assert "sys.path.insert(0, '/my/lib')" in code
+    # Library paths should appear before the session import
+    sys_path_pos = code.index("sys.path.insert")
+    connect_pos = code.index("from databricks.connect")
+    assert sys_path_pos < connect_pos
+
+
+def test_python_local_setup_includes_sys_path_for_libraries() -> None:
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK", libraries=("/my/lib",)),
+        _make_lineage(),
+        language="python",
+        local_spark=True,
+    )
+    assert "import sys" in code
+    assert "sys.path.insert(0, '/my/lib')" in code
+    sys_path_pos = code.index("sys.path.insert")
+    pyspark_pos = code.index("from pyspark.sql")
+    assert sys_path_pos < pyspark_pos
+
+
+def test_python_setup_no_libraries_no_sys_path() -> None:
+    code = generate_setup_code(
+        DatabricksConfig(profile="dev", cluster=None),
+        _make_lineage(),
+        language="python",
+    )
+    assert "import sys" not in code
+    assert "sys.path" not in code
+
+
+@patch("databricks_agent_notebooks.execution.injection.capture_pre_execution")
+def test_inject_cells_threads_libraries_to_python_setup(mock_capture) -> None:
+    mock_capture.return_value = _make_lineage()
+    notebook = _make_notebook(language="python")
+    config = DatabricksConfig(profile="dev", cluster=None, libraries=("/my/lib",))
+
+    inject_cells(notebook, config)
+
+    code = notebook.cells[0].source
+    assert "sys.path.insert(0, '/my/lib')" in code
+
+
+def test_scala_setup_ignores_libraries() -> None:
+    code = generate_setup_code(
+        DatabricksConfig(profile="dev", cluster="cls-1", libraries=("/my/lib",)),
+        _make_lineage(),
+        language="scala",
+    )
+    assert "sys.path" not in code
+    assert "import sys" not in code
+
+
+# ---------------------------------------------------------------------------
+# master_override (unified --cluster local[N] path)
+# ---------------------------------------------------------------------------
+
+
+def test_local_spark_python_master_override() -> None:
+    """master_override from --cluster takes precedence over env var."""
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="python",
+        local_spark=True,
+        master_override="local[2]",
+    )
+    assert 'master("local[2]")' in code
+    assert "Local Spark: local[2]" in code
+
+
+def test_local_spark_python_master_override_over_env(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """master_override wins over AGENT_NOTEBOOK_LOCAL_SPARK_MASTER env var."""
+    monkeypatch.setenv("AGENT_NOTEBOOK_LOCAL_SPARK_MASTER", "local[8]")
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="python",
+        local_spark=True,
+        master_override="local[4]",
+    )
+    assert 'master("local[4]")' in code
+    assert "local[8]" not in code
+
+
+def test_local_spark_scala_master_override() -> None:
+    """master_override threads through to Scala local setup."""
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="scala",
+        local_spark=True,
+        master_override="local[2]",
+    )
+    assert '.master("local[2]")' in code
+    assert "Local Spark: local[2]" in code
+
+
+def test_local_spark_no_override_uses_env_or_default() -> None:
+    """Without master_override, env var or default local[*] is used."""
+    code = generate_setup_code(
+        DatabricksConfig(profile="LOCAL_SPARK"),
+        _make_lineage(),
+        language="python",
+        local_spark=True,
+    )
+    assert 'master("local[*]")' in code
+
+
+@patch("databricks_agent_notebooks.execution.injection.capture_pre_execution")
+def test_inject_cells_threads_master_override(mock_capture) -> None:
+    """inject_cells passes master_override through to generate_setup_code."""
+    mock_capture.return_value = _make_lineage()
+    notebook = _make_notebook(language="python")
+    config = DatabricksConfig(profile="LOCAL_SPARK")
+
+    inject_cells(notebook, config, local_spark=True, master_override="local[2]")
+
+    code = notebook.cells[0].source
+    assert 'master("local[2]")' in code
+
+
+def test_local_spark_python_master_override_no_profile() -> None:
+    """--cluster local[2] without --profile LOCAL_SPARK must not say Serverless."""
+    code = generate_setup_code(
+        DatabricksConfig(),  # no profile -- the new --cluster path
+        _make_lineage(),
+        language="python",
+        local_spark=True,
+        master_override="local[2]",
+    )
+    assert 'master("local[2]")' in code
+    assert "Serverless" not in code
+    assert "Local Spark: local[2]" in code
+
+
+def test_local_spark_scala_master_override_no_profile() -> None:
+    """Scala: --cluster local[2] without profile must not say Serverless."""
+    code = generate_setup_code(
+        DatabricksConfig(),
+        _make_lineage(),
+        language="scala",
+        local_spark=True,
+        master_override="local[2]",
+    )
+    assert '.master("local[2]")' in code
+    assert "Serverless" not in code
+    assert "Local Spark: local[2]" in code

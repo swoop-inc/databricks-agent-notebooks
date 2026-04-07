@@ -310,11 +310,11 @@ wheels = [
 
 [[package]]
 name = "databricks-agent-notebooks"
-version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "databricks-sdk" },
     { name = "ipykernel" },
+    { name = "jinja2" },
     { name = "jupytext" },
     { name = "nbconvert" },
     { name = "nbformat-swoop" },
@@ -327,20 +327,25 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
+local-spark = [
+    { name = "pyspark" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "databricks-sdk", specifier = ">=0.102.0,<0.103.0" },
     { name = "ipykernel", specifier = ">=6.29" },
+    { name = "jinja2", specifier = ">=3.1" },
     { name = "jupytext", specifier = ">=1.16" },
     { name = "nbconvert", specifier = ">=7.16" },
     { name = "nbformat-swoop", specifier = ">=5.10.4.post1" },
     { name = "platformdirs", specifier = ">=4.3" },
+    { name = "pyspark", marker = "extra == 'local-spark'", specifier = ">=3.5,<4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rapidfuzz", specifier = ">=3.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["local-spark", "dev"]
 
 [[package]]
 name = "databricks-sdk"
@@ -977,6 +982,15 @@ wheels = [
 ]
 
 [[package]]
+name = "py4j"
+version = "0.10.9.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/31/0b210511177070c8d5d3059556194352e5753602fa64b85b7ab81ec1a009/py4j-0.10.9.9.tar.gz", hash = "sha256:f694cad19efa5bd1dee4f3e5270eb406613c974394035e5bfc4ec1aba870b879", size = 761089, upload-time = "2025-01-15T03:53:18.624Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/db/ea0203e495be491c85af87b66e37acfd3bf756fd985f87e46fc5e3bf022c/py4j-0.10.9.9-py2.py3-none-any.whl", hash = "sha256:c7c26e4158defb37b0bb124933163641a2ff6e3a3913f7811b0ddbe07ed61533", size = 203008, upload-time = "2025-01-15T03:53:15.648Z" },
+]
+
+[[package]]
 name = "pyasn1"
 version = "0.6.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1014,6 +1028,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b014
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217, upload-time = "2025-06-21T13:39:07.939Z" },
 ]
+
+[[package]]
+name = "pyspark"
+version = "3.5.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "py4j" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/80/5a/3806f44eb47387e8af803508cdd6bbc0df784febf4dc010700be04a1ff89/pyspark-3.5.8.tar.gz", hash = "sha256:54cca0767b21b40e3953ad1d30f8601c53abf9cbda763653289cdcfcac52313c", size = 317817299, upload-time = "2026-01-15T11:46:14.487Z" }
 
 [[package]]
 name = "pytest"

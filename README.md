@@ -1,30 +1,25 @@
 # databricks-agent-notebooks
 
-`databricks-agent-notebooks` is a Python package and CLI for working with Databricks-like notebooks from a local development environment. It exists to make automated notebook execution possible outside a workspace UI and IDE extensions.
+`databricks-agent-notebooks` is a Python package and CLI for executing Databricks-like notebooks from a local development environment. It makes automated notebook execution possible outside a workspace UI and IDE extensions, and is specifically optimized for coding agents such as Claude Code and Codex.
 
-The CLI is specifically optimized for use by coding agents such as Claude Code and Codex:
-
-- Command output is designed for agent use
-- Long-running Databricks operation monitoring is optimized to protect agent session context and minimize token use
-- Markdown is a first-class format for notebook creation and capturing execution outputs
-- Complex operations such as kernel and [Databrick Connect](https://docs.databricks.com/aws/en/dev-tools/databricks-connect) version management are fully automated based on the Databricks workspace/cluster configuration
-- `agent-notebooks help` includes a [README](python/src/databricks_agent_notebooks/for_agents/README.md) for agents and a [first-time setup flow](python/src/databricks_agent_notebooks/for_agents/agent_doctor.md)
-- Agents benefit from Databricks-optimized [Scala development tips](python/src/databricks_agent_notebooks/for_agents/scala_development.md)
-
-
-## Install From PyPI
+## Install
 
 ```bash
+# Remote execution (serverless and cluster via Databricks Connect)
 uv tool install databricks-agent-notebooks
+
+# Full functionality including LOCAL_SPARK (bundles standalone pyspark)
+uv tool install "databricks-agent-notebooks[local-spark]"
 ```
 
 Or with pip:
 
 ```bash
-pip install databricks-agent-notebooks
+pip install databricks-agent-notebooks                      # remote-only
+pip install "databricks-agent-notebooks[local-spark]"       # with LOCAL_SPARK
 ```
 
-Then, give your agent the following prompt:
+Then, give your agent:
 
 ```
 Run `agent-notebook help` and follow the agent README and agent doctor instructions
@@ -33,21 +28,30 @@ Run `agent-notebook help` and follow the agent README and agent doctor instructi
 ## Requirements
 
 - Configured [Databricks unified authentication](https://docs.databricks.com/en/dev-tools/auth/unified-auth) profile in `~/.databrickscfg` or `DATABRICKS_CONFIG_FILE`
-- For Scala notebooks, Java 11 or newer is required with `coursier` or `cs` on `PATH`
+- For Scala notebooks: Java 11+ with `coursier` or `cs` on `PATH`
+
+## Configuration
+
+Execution settings come from four levels, each overriding the previous:
+
+1. **`pyproject.toml`** -- `[tool.agent-notebook]` in the nearest `pyproject.toml` (walks up to `.git` boundary)
+2. **Environment variables** -- `AGENT_NOTEBOOK_*` env vars
+3. **Notebook frontmatter** -- YAML block at the top of markdown notebooks under the `agent-notebook:` key (the legacy `databricks:` key is also supported)
+4. **CLI flags** -- always win
+
+All resolved config and user-defined params are available at runtime as `agent_notebook_parameters` -- a Python dict injected into every Python and SQL notebook before execution (Scala support planned). Use `hooks.python.prologue_cells` in config to inject setup code (catalog selection, helper imports) between session creation and user content.
+
+See the [agent guide](python/src/databricks_agent_notebooks/for_agents/README.md#configuration) for the full precedence model, supported keys, and examples. See [runtime parameters](python/src/databricks_agent_notebooks/for_agents/README.md#runtime-parameters-agent_notebook_parameters) and [hooks](python/src/databricks_agent_notebooks/for_agents/README.md#hooks-prologue-cells) for the lifecycle extensibility features.
 
 ## Supported Notebook Formats
 
-Executing a notebook on Databricks requires three things:
+Executing a notebook requires a **language** and an execution target. The target is set via the `cluster` field: a Databricks cluster name/ID, `SERVERLESS`, or a local master URL like `local[*]`. An optional `profile` selects the Databricks auth profile. These values can be provided via `pyproject.toml`, notebook frontmatter, or CLI flags.
 
-- **Language** — Python, Scala, or SQL
-- **Profile** — a [Databricks unified authentication](https://docs.databricks.com/en/dev-tools/auth/unified-auth) profile identifying the workspace
-- **Cluster** (optional) — a cluster name or ID; omit for serverless execution
-
-**Markdown** is the recommended authoring format. A YAML frontmatter block can embed all three values so the notebook is self-contained:
+**Markdown** is the recommended authoring format. A YAML frontmatter block can embed all values so the notebook is self-contained. The frontmatter key is `agent-notebook:`:
 
 ````markdown
 ---
-databricks:
+agent-notebook:
   language: python
   profile: my-workspace
   cluster: my-cluster-name
@@ -59,38 +63,33 @@ databricks:
 df = spark.sql("SELECT current_catalog(), current_schema()")
 display(df)
 ```
-
-```python
-df.printSchema()
-```
 ````
 
-Scala notebooks work the same way. This one omits `cluster`, so it runs serverless:
+Scala notebooks work the same way (use `cluster: SERVERLESS` for explicit serverless, or omit for implicit serverless):
 
 ````markdown
 ---
-databricks:
+agent-notebook:
   language: scala
   profile: my-workspace
+  cluster: SERVERLESS
 ---
-
-# Scala smoke test
 
 ```scala
 spark.sql("SELECT 1").show()
 ```
 ````
 
-Local Spark notebooks skip Databricks entirely — useful for CI, testing, and development without credentials:
+Scala notebooks have additional restrictions. See [Scala development](python/src/databricks_agent_notebooks/for_agents/scala_development.md) for details.
+
+Local Spark notebooks skip Databricks entirely -- useful for CI, testing, and development without credentials:
 
 ````markdown
 ---
-databricks:
+agent-notebook:
   language: python
-  profile: LOCAL_SPARK
+  cluster: "local[*]"
 ---
-
-# Local test
 
 ```python
 result = spark.range(10).count()
@@ -98,79 +97,107 @@ print(f"count={result}")
 ```
 ````
 
-CLI flags (`--profile`, `--cluster`, `--language`) override frontmatter values. When frontmatter is not provided, these values must be passed explicitly on the `run` command.
+Each markdown notebook must use a single language -- you cannot mix Python and Scala cells.
 
-Each markdown notebook must use a single language — you cannot mix Python and Scala cells the way you can in a Databricks workspace notebook, because execution runs through Databricks Connect rather than a workspace interpreter.
+### Other supported formats
 
-### Other supported notebook formats
+- [Databricks Source Format](https://docs.databricks.com/aws/en/notebooks/notebook-format) (`.py`, `.scala`, `.sql`)
+- Jupyter notebooks (`.ipynb`)
 
-- [Databricks Source Format](https://docs.databricks.com/aws/en/notebooks/notebook-format) (`.py`, `.scala`, `.sql`) — notebooks exported from a Databricks workspace with header and cell delimiters. Note that `.py` notebooks cannot refer to code in other `.py` notebooks and certain Databricks specific cell types such as `%run` are unsupported.
-- Jupyter notebooks (`.ipynb`) — executed as-is with existing kernel metadata
+These formats have no frontmatter mechanism, so profile and cluster must come from `pyproject.toml` or CLI flags.
 
-These formats have no frontmatter mechanism, so `--profile` and optionally `--cluster` must always be provided as CLI flags.
-
-## Useful Commands
-
-Check the installation:
+## Quick Usage
 
 ```bash
+# Check installation
 agent-notebook doctor
-```
 
-Execute a notebook's cells on Databricks to generate IPython, Markdown and HTML outputs:
-
-```bash
-# profile and, optionally, cluster specified in frontmatter 
+# Run a notebook (profile/cluster from frontmatter or pyproject.toml)
 agent-notebook run path/to/notebook.md
 
-# with a specific profile and cluster
-agent-notebook run path/to/notebook.md --profile <profile_name> --cluster <cluster-name-or-id>
+# Override profile and cluster on the CLI
+agent-notebook run path/to/notebook.md --profile my-workspace --cluster my-cluster-id
 
-# local execution — no Databricks credentials needed
-agent-notebook run path/to/notebook.md --profile LOCAL_SPARK
+# Explicit serverless execution
+agent-notebook run path/to/notebook.md --cluster SERVERLESS
+
+# Local execution -- no Databricks credentials needed
+agent-notebook run path/to/notebook.md --cluster "local[*]"
+agent-notebook run path/to/notebook.md --cluster "local[4]"   # 4 threads
 ```
 
-Output files are written to `path/to/notebook_output/`: 
+Output files are written to `path/to/notebook_output/`:
 
 - `notebook.executed.ipynb` (executed notebook)
 - `notebook.executed.md` (Markdown)
 - `notebook.executed.html` (HTML)
 
-Use `--output-dir` to change the parent directory, or `--format md` / `--format html` to emit only one rendered format. 
+Use `--output-dir` to change the parent directory, or `--format all` / `--format md` / `--format html` to control rendered output.
 
-### Tips
+## CLI Quick Reference (`run`)
 
-- Do not add `--timeout` unless you know the cell-level upper bound you want to enforce and understand the effects of external factors such as cluster startup, shared resource availability, autoscaling, possible stage failure or spot instance loss, and the like.
-- `--allow-errors` will continue execution on cell errors. This is useful when a notebook contains independent commands, e.g., a series of summary queries -- `display(spark.sql(...))`.
-- Passing a cluster ID is the deterministic path for cluster-based execution
-- A cluster name will be resolved to a cluster ID in a best-effort manner, within a 30 second timeout window. In case of no resolution, helpful fuzzy matches will be returned to help with typos.
-- `--no-inject-session` bypasses managed Databricks Connect runtime selection and session injection for both cluster-backed and serverless runs when your notebook handles its own Spark session
-- For Python serverless execution, the policy tries a conservative version first, validates it, falls back to older supported lines if needed, and caches the first workspace/profile success under runtime-home for reuse. `DATABRICKS_AGENT_NOTEBOOKS_SERVERLESS_CONNECT_LINE` is a Python-only escape hatch for forcing an explicit serverless Connect line in the unlikely event you need to override the cached/default policy.
+| Flag | Description |
+|---|---|
+| `--profile` | Databricks auth profile (see note on `LOCAL_SPARK` below) |
+| `--cluster` | Execution target: cluster name/ID, `SERVERLESS`, or `local[N]` |
+| `--language` | Override notebook language (python, scala) |
+| `--format` | Output format: `all` (default), `md`, `html` |
+| `--output-dir` | Output directory (default: input file's parent) |
+| `--timeout` | Per-cell timeout in seconds (default: unset) |
+| `--allow-errors` | Continue execution on cell errors |
+| `--no-inject-session` | Skip Databricks Connect session injection |
+| `--no-preprocess` | Skip preprocessing directive expansion |
+| `--param NAME=VALUE` | Set a preprocessing parameter (repeatable) |
+| `--library PATH` | Add a Python library path to sys.path (repeatable) |
+| `--clean` | Remove and recreate the output directory before running |
+
+## Tips
+
+- `--allow-errors` is useful when a notebook contains independent commands, e.g., a series of summary queries.
+- Passing a cluster ID is the deterministic path for cluster-based execution. Name resolution is best-effort with a configurable `cluster_list_timeout` (default: 120s).
+- `--clean` removes and recreates the output directory -- useful for deterministic re-runs.
+
+## Execution Targets
+
+The `--cluster` flag is a unified execution target selector:
+
+| Value | Execution mode |
+|---|---|
+| `SERVERLESS` | Explicit serverless (Databricks Connect) |
+| `local[*]`, `local[4]`, etc. | Local Spark session (no Databricks) |
+| `my-cluster` or cluster ID | Databricks cluster-backed execution |
+| *(omitted)* | Serverless (implicit default) |
+
+`SERVERLESS` is case-insensitive. Local master patterns are case-sensitive (lowercase only), following Spark conventions (`local`, `local[*]`, `local[N]`, `local[N,M]`).
 
 ### Local Execution
 
-`--profile LOCAL_SPARK` runs notebooks against a local Spark session with no Databricks credentials needed.
+`--cluster "local[*]"` runs notebooks against a local Spark session with no Databricks credentials needed.
 
-- `--profile LOCAL_SPARK --cluster foo` is an error — the two are mutually exclusive
-- `SPARK_HOME` is not needed — Scala uses `$ivy` imports (self-contained). Python requires pyspark installed in the active Python environment (`pip install pyspark` or `uv pip install pyspark`)
+- Python requires pyspark, included with the `[local-spark]` extra. Scala uses `$ivy` imports (self-contained)
+- `--no-inject-session` can be combined with local execution if you want to skip the injected session
+- `--profile LOCAL_SPARK` still works for backward compatibility but is deprecated. Use `--cluster "local[*]"` instead.
 
-`--no-inject-session` is a separate concern: it skips session injection entirely so the notebook can manage its own Spark session. It can be combined with `--profile LOCAL_SPARK` if you want local execution without the injected session.
+See the [agent guide's local execution section](python/src/databricks_agent_notebooks/for_agents/README.md#local-execution-no-databricks) for environment variable tuning, Scala restrictions, and configuration behavior details.
 
-Environment variables for tuning (all optional):
+## Agent Defaults
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `AGENT_NOTEBOOK_LOCAL_SPARK_MASTER` | `local[*]` | Spark master URL |
-| `AGENT_NOTEBOOK_LOCAL_SPARK_DRIVER_MEMORY` | _(Spark default)_ | Driver memory, e.g., `2g` |
-| `AGENT_NOTEBOOK_LOCAL_SPARK_EXECUTOR_MEMORY` | _(Spark default)_ | e.g., `2g` — Python only (see Scala restrictions below) |
-| `AGENT_NOTEBOOK_LOCAL_SPARK_VERSION` | `3.5.4` | Scala only (Python uses pip-installed PySpark); Spark version for `$ivy` import |
+Built-in defaults that apply when no explicit configuration overrides them.
+Override via environment definitions, `pyproject.toml`, env var, or frontmatter.
 
-> **Scala:** The CLI validates master URLs and memory configuration at startup.
-> See [Scala local mode restrictions](python/src/databricks_agent_notebooks/for_agents/scala_development.md#local-mode-restrictions)
-> for details.
+```yaml
+# agent-notebook built-in defaults
+cluster_list_timeout: 120  # seconds -- budget for cluster listing and name resolution
+                           # env var: AGENT_NOTEBOOK_CLUSTER_LIST_TIMEOUT
+```
 
 ## Deeper Documentation
 
+- [Agent guide](python/src/databricks_agent_notebooks/for_agents/README.md) -- comprehensive reference for agent and automated use
+- [Runtime parameters](python/src/databricks_agent_notebooks/for_agents/README.md#runtime-parameters-agent_notebook_parameters) -- accessing resolved config at runtime
+- [Hooks (prologue cells)](python/src/databricks_agent_notebooks/for_agents/README.md#hooks-prologue-cells) -- injecting setup code before notebook content
+- [First-time setup](python/src/databricks_agent_notebooks/for_agents/agent_doctor.md) -- readiness checks
+- [Scala development](python/src/databricks_agent_notebooks/for_agents/scala_development.md) -- Scala-specific tips and restrictions
 - [Runtime-home layout](docs/runtime-home.md)
 - [Release and publishing notes](docs/release.md)
 

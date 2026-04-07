@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # Kernel metadata per language — single source of truth.
@@ -112,3 +113,16 @@ def scala_variant_for_dbr(major: int) -> ScalaVariant:
 LOCAL_SPARK_PROFILE = "LOCAL_SPARK"
 LOCAL_SPARK_DEFAULT_MASTER = "local[*]"
 LOCAL_SPARK_DEFAULT_VERSION = "3.5.4"
+
+
+# ---------------------------------------------------------------------------
+# Unified --cluster execution target: reserved names and patterns
+# ---------------------------------------------------------------------------
+
+# Reserved cluster name for explicit serverless selection.
+SERVERLESS_CLUSTER = "SERVERLESS"
+
+# Regex matching valid Spark local master URLs:
+#   local, local[*], local[4], local[4,2]
+# Used both for --cluster value detection and Scala validation.
+LOCAL_MASTER_RE = re.compile(r"^local(\[(\*|\d+)(,\d+)?\])?$")

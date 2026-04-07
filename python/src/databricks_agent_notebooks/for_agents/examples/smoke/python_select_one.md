@@ -1,5 +1,5 @@
 ---
-databricks:
+agent-notebook:
   language: python
 ---
 

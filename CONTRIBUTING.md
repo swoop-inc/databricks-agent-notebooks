@@ -9,7 +9,7 @@ Set up a local editable environment from the repository root:
 ```bash
 uv venv
 source .venv/bin/activate
-uv pip install -e './python[dev]'
+uv pip install -e './python[dev,local-spark]'
 python -m databricks_agent_notebooks help
 agent-notebook help
 ```

@@ -160,8 +160,9 @@ def check_pyspark() -> Check:
         return Check(
             "pyspark",
             "warn",
-            "pyspark not found — required for Python LOCAL_SPARK "
-            "(pip install pyspark or uv pip install pyspark)",
+            "pyspark not found -- required for Python LOCAL_SPARK. "
+            'Reinstall with: uv tool install "databricks-agent-notebooks[local-spark]" '
+            "(or: pip install pyspark)",
         )
 
     # find_spec returned truthy — verify the package actually loads.
@@ -171,8 +172,9 @@ def check_pyspark() -> Check:
         return Check(
             "pyspark",
             "warn",
-            f"pyspark directory found but not importable ({exc}) — "
-            "reinstall with: pip install pyspark (or uv pip install pyspark)",
+            f"pyspark directory found but not importable ({exc}) -- "
+            'reinstall with: uv tool install "databricks-agent-notebooks[local-spark]" '
+            "(or: pip install pyspark)",
         )
 
     # Determine version

@@ -14,8 +14,6 @@ from typing import Any, Protocol, TypeVar
 _CLUSTER_ID_RE = re.compile(r"^\d{4}-\d{6}-[a-z0-9]{8}$")
 _CLUSTERS_LIST_PATH = "/api/2.1/clusters/list"
 _CLUSTERS_PAGE_SIZE = 100
-_DEFAULT_RESOLVE_TIMEOUT_SECONDS = 30.0
-_DEFAULT_LIST_TIMEOUT_SECONDS = _DEFAULT_RESOLVE_TIMEOUT_SECONDS
 _T = TypeVar("_T")
 
 
@@ -69,16 +67,18 @@ class SdkClusterService:
 
     def __init__(
         self,
+        resolved: dict[str, Any],
         *,
         client_factory: Callable[[str], Any] | None = None,
         clock: Callable[[], float] | None = None,
-        resolve_timeout_seconds: float = _DEFAULT_RESOLVE_TIMEOUT_SECONDS,
-        list_timeout_seconds: float = _DEFAULT_LIST_TIMEOUT_SECONDS,
     ) -> None:
+        from databricks_agent_notebooks.config.resolution import PARAM_CLUSTER_LIST_TIMEOUT
+
+        timeout = float(resolved[PARAM_CLUSTER_LIST_TIMEOUT])
         self._client_factory = client_factory or _build_workspace_client
         self._clock = clock or time.monotonic
-        self._resolve_timeout_seconds = resolve_timeout_seconds
-        self._list_timeout_seconds = list_timeout_seconds
+        self._resolve_timeout_seconds = timeout
+        self._list_timeout_seconds = timeout
 
     def get_cluster(self, cluster_id: str, profile: str) -> Cluster:
         """Fetch a single cluster by exact *cluster_id*."""
@@ -317,9 +317,9 @@ class SdkClusterService:
         return self._resolve_timeout_seconds
 
 
-def default_service() -> ClusterService:
+def default_service(resolved: dict[str, Any]) -> ClusterService:
     """Return the standard SDK-backed cluster service."""
-    return SdkClusterService()
+    return SdkClusterService(resolved)
 
 
 def _parse_cluster(data: Any) -> Cluster:
