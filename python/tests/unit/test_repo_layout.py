@@ -163,15 +163,13 @@ def test_publish_workflow_uses_trusted_publishing_scaffolding() -> None:
     tag_version_step = next(
         step
         for step in build_steps
-        if step.get("name") == "Verify tag matches package version"
+        if step.get("name") == "Verify tag matches built version"
     )
     assert tag_version_step["if"] == (
         "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
     )
     assert "github.ref_name" in tag_version_step["run"]
-    assert "pyproject.toml" in tag_version_step["run"]
-    assert "project" in tag_version_step["run"]
-    assert "version" in tag_version_step["run"]
+    assert ".whl" in tag_version_step["run"]
 
     assert testpypi_job["if"] == "github.event_name == 'workflow_dispatch'"
     assert testpypi_job["permissions"] == {"id-token": "write"}

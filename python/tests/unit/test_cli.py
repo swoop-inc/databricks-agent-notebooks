@@ -1818,6 +1818,7 @@ def test_run_cluster_local_master_activates_local_spark(tmp_path: Path, capsys) 
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
         patch("databricks_agent_notebooks.cli.nbformat.write"),
         patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+        patch.dict("sys.modules", {"pyspark": MagicMock()}),
     ):
         result = main(["run", "--cluster", "local[2]", str(input_file)])
 
@@ -1858,6 +1859,7 @@ def test_run_cluster_bare_local_activates_local_spark(tmp_path: Path, capsys) ->
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
         patch("databricks_agent_notebooks.cli.nbformat.write"),
         patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+        patch.dict("sys.modules", {"pyspark": MagicMock()}),
     ):
         result = main(["run", "--cluster", "local", str(input_file)])
 
@@ -1890,6 +1892,7 @@ def test_run_legacy_local_spark_profile_emits_deprecation_warning(tmp_path: Path
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
         patch("databricks_agent_notebooks.cli.nbformat.write"),
         patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+        patch.dict("sys.modules", {"pyspark": MagicMock()}),
     ):
         result = main(["run", "--profile", "LOCAL_SPARK", str(input_file)])
 
@@ -1923,6 +1926,7 @@ def test_run_cluster_local_plus_profile_local_spark_allowed_with_deprecation(tmp
         patch("databricks_agent_notebooks.cli.render", return_value={"md": tmp_path / "out.md"}),
         patch("databricks_agent_notebooks.cli.nbformat.write"),
         patch("databricks_agent_notebooks.cli.preprocess_text", side_effect=lambda text, **kw: text),
+        patch.dict("sys.modules", {"pyspark": MagicMock()}),
     ):
         result = main(["run", "--cluster", "local[2]", "--profile", "LOCAL_SPARK", str(input_file)])
 
