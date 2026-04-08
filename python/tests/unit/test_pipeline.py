@@ -16,9 +16,12 @@ from databricks_agent_notebooks.pipeline import (
     MissingTableError,
     OptionalDataFrame,
     StepRunner,
+    _ensure_schema_exists,
     _is_spark_connect,
+    _materialize_and_read,
     _parse_flexible_set,
     _parse_step_config,
+    _table_exists,
     _validate_table_name,
     read_or_compute_table_step,
     cluster_cores,
@@ -1266,3 +1269,284 @@ class TestCoreBasedParallelism:
                 spark=spark,
             )
         assert result == 20
+
+
+# ===========================================================================
+# _table_exists tests
+# ===========================================================================
+
+
+class TestTableExists:
+    """Tests for _table_exists helper -- SCHEMA_NOT_FOUND tolerance."""
+
+    def test_table_exists_returns_true(self):
+        spark = MagicMock()
+        spark.catalog.tableExists.return_value = True
+        assert _table_exists(spark, "cat.schema.table") is True
+        spark.catalog.tableExists.assert_called_once_with("cat.schema.table")
+
+    def test_table_does_not_exist_returns_false(self):
+        spark = MagicMock()
+        spark.catalog.tableExists.return_value = False
+        assert _table_exists(spark, "cat.schema.table") is False
+
+    def test_schema_not_found_returns_false(self):
+        """SCHEMA_NOT_FOUND from tableExists should return False, not raise."""
+        AnalysisException = type("AnalysisException", (Exception,), {})
+        spark = MagicMock()
+        spark.catalog.tableExists.side_effect = AnalysisException(
+            "[SCHEMA_NOT_FOUND] The schema `swoop_dev.__testing_abc` cannot be found."
+        )
+        assert _table_exists(spark, "swoop_dev.__testing_abc.my_table") is False
+
+    def test_table_or_view_not_found_returns_false(self):
+        """TABLE_OR_VIEW_NOT_FOUND from tableExists should return False."""
+        AnalysisException = type("AnalysisException", (Exception,), {})
+        spark = MagicMock()
+        spark.catalog.tableExists.side_effect = AnalysisException(
+            "[TABLE_OR_VIEW_NOT_FOUND] table not found"
+        )
+        assert _table_exists(spark, "cat.schema.table") is False
+
+    def test_non_analysis_exception_propagates(self):
+        """Non-AnalysisException errors should propagate."""
+        spark = MagicMock()
+        spark.catalog.tableExists.side_effect = ConnectionError("network failure")
+        with pytest.raises(ConnectionError, match="network failure"):
+            _table_exists(spark, "cat.schema.table")
+
+    def test_other_analysis_exception_propagates(self):
+        """AnalysisException with non-not-found error class should propagate."""
+        AnalysisException = type("AnalysisException", (Exception,), {})
+        spark = MagicMock()
+        spark.catalog.tableExists.side_effect = AnalysisException(
+            "[INSUFFICIENT_PERMISSIONS] User does not have access."
+        )
+        with pytest.raises(AnalysisException, match="INSUFFICIENT_PERMISSIONS"):
+            _table_exists(spark, "cat.schema.table")
+
+    def test_spark_connect_schema_not_found_cache_check(self, mock_spark):
+        """End-to-end: Spark Connect with SCHEMA_NOT_FOUND triggers compute."""
+        mock_spark.__class__.__module__ = "pyspark.sql.connect.session"
+        AnalysisException = type("AnalysisException", (Exception,), {})
+        mock_spark.catalog.tableExists.side_effect = AnalysisException(
+            "[SCHEMA_NOT_FOUND] The schema `swoop_dev.__testing_abc` cannot be found."
+        )
+
+        compute_df = MagicMock()
+        compute_df.write = MagicMock()
+        read_back = MagicMock()
+        mock_spark.table.return_value = read_back
+
+        ctx = Context()
+        ctx["spark"] = mock_spark
+        set_context(ctx)
+
+        result = read_or_compute_table(
+            read="swoop_dev.__testing_abc.my_table",
+            compute=lambda: compute_df,
+        )
+        # Should have gone through compute path, not raised
+        compute_df.write.mode.return_value.saveAsTable.assert_called_once_with(
+            "swoop_dev.__testing_abc.my_table"
+        )
+
+    def test_disabled_step_schema_not_found_spark_connect(self, mock_spark):
+        """Disabled step + SCHEMA_NOT_FOUND on Spark Connect = deferred error, not crash."""
+        mock_spark.__class__.__module__ = "pyspark.sql.connect.session"
+        AnalysisException = type("AnalysisException", (Exception,), {})
+        mock_spark.catalog.tableExists.side_effect = AnalysisException(
+            "[SCHEMA_NOT_FOUND] The schema `swoop_dev.__testing_abc` cannot be found."
+        )
+
+        ctx = Context()
+        ctx["spark"] = mock_spark
+        ctx.overlay_params({"steps": '{"ingest": false}'})
+        runner = StepRunner(steps=["ingest"])
+        ctx.set_runner(runner)
+        set_context(ctx)
+
+        # ctx.run should raise RuntimeError (disabled + no cache), not AnalysisException
+        with pytest.raises(RuntimeError, match="disabled but table.*does not exist"):
+            ctx.run(
+                "ingest",
+                table="swoop_dev.__testing_abc.my_table",
+                compute=lambda: None,
+            )
+
+    def test_disabled_step_schema_not_found_optional(self, mock_spark):
+        """read_or_compute_table_step with SCHEMA_NOT_FOUND returns deferred error."""
+        mock_spark.__class__.__module__ = "pyspark.sql.connect.session"
+        AnalysisException = type("AnalysisException", (Exception,), {})
+        mock_spark.catalog.tableExists.side_effect = AnalysisException(
+            "[SCHEMA_NOT_FOUND] The schema `swoop_dev.__testing_abc` cannot be found."
+        )
+
+        ctx = Context()
+        ctx["spark"] = mock_spark
+        runner = StepRunner(steps=["enrich"])
+        ctx.set_runner(runner)
+        ctx.overlay_params({"steps": '{"enrich": false}'})
+        set_context(ctx)
+
+        result = read_or_compute_table_step(
+            "enrich",
+            read="swoop_dev.__testing_abc.enriched",
+            compute=lambda: pytest.fail("compute should not be called"),
+        )
+        assert bool(result) is False
+        with pytest.raises(MissingTableError):
+            result.get()
+
+
+# ===========================================================================
+# _ensure_schema_exists tests
+# ===========================================================================
+
+
+class TestEnsureSchemaExists:
+    """Tests for _ensure_schema_exists helper."""
+
+    def test_three_part_name_creates_schema(self):
+        spark = MagicMock()
+        _ensure_schema_exists(spark, "swoop_dev.__testing_abc.my_table")
+        spark.sql.assert_called_once_with(
+            "CREATE SCHEMA IF NOT EXISTS swoop_dev.__testing_abc"
+        )
+
+    def test_two_part_name_is_noop(self):
+        spark = MagicMock()
+        _ensure_schema_exists(spark, "schema.my_table")
+        spark.sql.assert_not_called()
+
+    def test_one_part_name_is_noop(self):
+        spark = MagicMock()
+        _ensure_schema_exists(spark, "my_table")
+        spark.sql.assert_not_called()
+
+
+# ===========================================================================
+# _materialize_and_read SCHEMA_NOT_FOUND retry tests
+# ===========================================================================
+
+
+class TestMaterializeAndReadRetry:
+    """Tests for SCHEMA_NOT_FOUND auto-create and retry in _materialize_and_read."""
+
+    def test_no_error_no_retry(self):
+        """Normal write path -- no retry needed."""
+        spark = MagicMock()
+        df = MagicMock()
+        df.write = MagicMock()
+        read_back = MagicMock()
+        spark.table.return_value = read_back
+
+        result = _materialize_and_read(spark, "cat.schema.table", df)
+        df.write.mode.assert_called_once_with("overwrite")
+        df.write.mode.return_value.saveAsTable.assert_called_once_with("cat.schema.table")
+        assert result is read_back
+
+    def test_schema_not_found_triggers_create_and_retry(self):
+        """SCHEMA_NOT_FOUND on first saveAsTable -> create schema -> retry."""
+        spark = MagicMock()
+        df = MagicMock()
+        df.write = MagicMock()
+        read_back = MagicMock()
+        spark.table.return_value = read_back
+
+        # First saveAsTable raises SCHEMA_NOT_FOUND, second succeeds
+        save_mock = df.write.mode.return_value.saveAsTable
+        AnalysisException = type("AnalysisException", (Exception,), {})
+        save_mock.side_effect = [
+            AnalysisException("[SCHEMA_NOT_FOUND] The schema `cat.schema` cannot be found."),
+            None,
+        ]
+
+        result = _materialize_and_read(spark, "cat.schema.table", df)
+
+        # Schema should have been created
+        spark.sql.assert_called_once_with("CREATE SCHEMA IF NOT EXISTS cat.schema")
+        # saveAsTable called twice (original + retry)
+        assert save_mock.call_count == 2
+        assert result is read_back
+
+    def test_non_schema_error_propagates(self):
+        """Non-SCHEMA_NOT_FOUND errors propagate without retry."""
+        spark = MagicMock()
+        df = MagicMock()
+        df.write = MagicMock()
+
+        save_mock = df.write.mode.return_value.saveAsTable
+        save_mock.side_effect = RuntimeError("disk full")
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            _materialize_and_read(spark, "cat.schema.table", df)
+
+        # Should NOT have tried to create schema
+        spark.sql.assert_not_called()
+
+    def test_dataframe_writer_retry(self):
+        """DataFrameWriter path retries on SCHEMA_NOT_FOUND with warning."""
+        spark = MagicMock()
+        # A DataFrameWriter has saveAsTable but no collect
+        writer = MagicMock(spec=["saveAsTable", "mode", "format"])
+        read_back = MagicMock()
+        spark.table.return_value = read_back
+
+        AnalysisException = type("AnalysisException", (Exception,), {})
+        writer.saveAsTable.side_effect = [
+            AnalysisException("[SCHEMA_NOT_FOUND] The schema `cat.schema` cannot be found."),
+            None,
+        ]
+
+        result = _materialize_and_read(spark, "cat.schema.table", writer)
+
+        spark.sql.assert_called_once_with("CREATE SCHEMA IF NOT EXISTS cat.schema")
+        assert writer.saveAsTable.call_count == 2
+        assert result is read_back
+
+    def test_two_part_name_no_schema_create(self):
+        """SCHEMA_NOT_FOUND with two-part name -- _ensure_schema_exists is a no-op."""
+        spark = MagicMock()
+        df = MagicMock()
+        df.write = MagicMock()
+
+        save_mock = df.write.mode.return_value.saveAsTable
+        AnalysisException = type("AnalysisException", (Exception,), {})
+        # First call raises, retry also raises (schema not created for 2-part name)
+        save_mock.side_effect = AnalysisException(
+            "[SCHEMA_NOT_FOUND] The schema `schema` cannot be found."
+        )
+
+        # _ensure_schema_exists is a no-op for 2-part names, so the retry
+        # will raise the same error
+        with pytest.raises(AnalysisException):
+            _materialize_and_read(spark, "schema.table", df)
+
+        # _ensure_schema_exists should NOT have issued CREATE SCHEMA
+        spark.sql.assert_not_called()
+
+    def test_non_analysis_exception_with_schema_not_found_propagates(self):
+        """Non-AnalysisException mentioning SCHEMA_NOT_FOUND should NOT retry."""
+        spark = MagicMock()
+        df = MagicMock()
+        df.write = MagicMock()
+
+        save_mock = df.write.mode.return_value.saveAsTable
+        save_mock.side_effect = RuntimeError(
+            "Wrapped: SCHEMA_NOT_FOUND in some context"
+        )
+
+        with pytest.raises(RuntimeError, match="SCHEMA_NOT_FOUND"):
+            _materialize_and_read(spark, "cat.schema.table", df)
+
+        # Should NOT have tried to create schema (wrong exception type)
+        spark.sql.assert_not_called()
+
+    def test_invalid_table_name_still_rejected(self):
+        """Table name validation still runs before any write attempt."""
+        spark = MagicMock()
+        df = MagicMock()
+
+        with pytest.raises(ValueError, match="Invalid table name"):
+            _materialize_and_read(spark, "table; DROP TABLE users--", df)

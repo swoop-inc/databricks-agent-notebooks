@@ -231,7 +231,7 @@ class Context:
             # Disabled step -- try to serve from cache
             spark = _resolve_spark(self)
             if _is_spark_connect(spark):
-                if spark.catalog.tableExists(table):
+                if _table_exists(spark, table):
                     df = spark.table(table)
                     logger.info("Step '%s' disabled -- serving from cache: %s", step, table)
                     return df
@@ -241,7 +241,10 @@ class Context:
                         f"Cannot serve from cache."
                     )
             else:
-                # Classic Spark: spark.table() throws eagerly
+                # Classic Spark: spark.table() throws eagerly.
+                # Error matching is by type name because PySpark's
+                # AnalysisException is a single class -- the error class
+                # (TABLE_OR_VIEW_NOT_FOUND, etc.) is only in the message.
                 try:
                     df = spark.table(table)
                     logger.info("Step '%s' disabled -- serving from cache: %s", step, table)
@@ -355,14 +358,17 @@ def read_or_compute_table(
     if not refresh:
         if _is_spark_connect(spark):
             # Spark Connect: spark.table() is lazy -- use catalog for existence check
-            if spark.catalog.tableExists(table_name):
+            if _table_exists(spark, table_name):
                 df = spark.table(table_name)
                 logger.info("Cache hit: %s", table_name)
                 return df
             else:
                 logger.info("Cache miss: %s -- computing", table_name)
         else:
-            # Classic Spark: spark.table() throws eagerly -- one round trip
+            # Classic Spark: spark.table() throws eagerly -- one round trip.
+            # Error matching is by type name because PySpark's
+            # AnalysisException is a single class -- the error class
+            # (TABLE_OR_VIEW_NOT_FOUND, etc.) is only in the message.
             try:
                 df = spark.table(table_name)
                 logger.info("Cache hit: %s", table_name)
@@ -507,7 +513,7 @@ def read_or_compute_table_step(
     # branch on runtime type.
     spark = _resolve_spark(ctx)
     if _is_spark_connect(spark):
-        if spark.catalog.tableExists(table_name):
+        if _table_exists(spark, table_name):
             df = spark.table(table_name)
             return OptionalDataFrame(
                 step=step, id=value_id, table_name=table_name, _df=df,
@@ -522,7 +528,10 @@ def read_or_compute_table_step(
                 ),
             )
     else:
-        # Classic Spark: spark.table() throws eagerly
+        # Classic Spark: spark.table() throws eagerly.
+        # Error matching is by type name because PySpark's
+        # AnalysisException is a single class -- the error class
+        # (TABLE_OR_VIEW_NOT_FOUND, etc.) is only in the message.
         try:
             df = spark.table(table_name)
             return OptionalDataFrame(
@@ -801,6 +810,31 @@ def _is_spark_connect(spark) -> bool:
     return type(spark).__module__.startswith("pyspark.sql.connect")
 
 
+def _table_exists(spark: Any, table_name: str) -> bool:
+    """Check table existence on Spark Connect, tolerating missing schemas.
+
+    ``spark.catalog.tableExists()`` throws ``AnalysisException`` with
+    error class ``SCHEMA_NOT_FOUND`` when the parent schema does not
+    exist, rather than returning ``False``.  This wrapper catches that
+    case.
+
+    Error matching is by exception type name because PySpark does not
+    expose a stable exception class hierarchy -- ``AnalysisException``
+    is a single class for all analysis errors, and the error class
+    (``SCHEMA_NOT_FOUND``, ``TABLE_OR_VIEW_NOT_FOUND``, etc.) is only
+    available as a string in the message.  This is fragile but
+    unavoidable given PySpark's exception design.
+    """
+    try:
+        return spark.catalog.tableExists(table_name)
+    except Exception as e:
+        if "AnalysisException" in type(e).__name__:
+            msg = str(e)
+            if "SCHEMA_NOT_FOUND" in msg or "TABLE_OR_VIEW_NOT_FOUND" in msg:
+                return False
+        raise
+
+
 def _call_with_optional_context(fn: Callable[..., Any], ctx: Context | None) -> Any:
     """Call *fn* with context if it accepts a parameter, otherwise without."""
     sig = inspect.signature(fn)
@@ -854,6 +888,20 @@ def _validate_table_name(name: str) -> None:
         )
 
 
+def _ensure_schema_exists(spark: Any, table_name: str) -> None:
+    """Create the parent schema if the table name is catalog-qualified.
+
+    Only acts on three-part names (``catalog.schema.table``).  Two-part
+    names target the session's current catalog/schema and are left alone.
+    """
+    parts = table_name.split(".")
+    if len(parts) == 3:
+        catalog, schema, _ = parts
+        fqn = f"{catalog}.{schema}"
+        spark.sql(f"CREATE SCHEMA IF NOT EXISTS {fqn}")
+        logger.info("Auto-created schema: %s", fqn)
+
+
 def _materialize_and_read(spark: Any, table_name: str, result: Any) -> Any:
     """Materialize a compute result (DataFrame or DataFrameWriter) as a table.
 
@@ -865,14 +913,37 @@ def _materialize_and_read(spark: Any, table_name: str, result: Any) -> Any:
     - **DataFrame**: the framework owns the write strategy and uses
       ``mode("overwrite")`` as the default -- appropriate for a cached
       computed value where recompute should replace the previous result.
+
+    If ``saveAsTable`` fails with ``SCHEMA_NOT_FOUND``, the parent schema
+    is auto-created and the write is retried once.  For the DataFrame path,
+    retry is safe because ``.write`` creates a fresh ``DataFrameWriter`` on
+    each call.  For the DataFrameWriter path (user-configured), retry reuses
+    the same writer object -- Spark's ``DataFrameWriter`` is typically a
+    reusable builder, but this is undocumented.
     """
     _validate_table_name(table_name)
-    # Check if result is a DataFrameWriter (has saveAsTable method but no collect)
-    if hasattr(result, "saveAsTable") and not hasattr(result, "collect"):
-        result.saveAsTable(table_name)
-    else:
-        # Assume DataFrame -- overwrite is the right default for cached values
-        result.write.mode("overwrite").saveAsTable(table_name)
+    is_writer = hasattr(result, "saveAsTable") and not hasattr(result, "collect")
+
+    def _do_save():
+        if is_writer:
+            result.saveAsTable(table_name)
+        else:
+            result.write.mode("overwrite").saveAsTable(table_name)
+
+    try:
+        _do_save()
+    except Exception as e:
+        if "AnalysisException" in type(e).__name__ and "SCHEMA_NOT_FOUND" in str(e):
+            _ensure_schema_exists(spark, table_name)
+            if is_writer:
+                logger.warning(
+                    "Retrying saveAsTable with a DataFrameWriter after "
+                    "SCHEMA_NOT_FOUND -- writer reuse after failure is "
+                    "undocumented; if this fails, use a DataFrame instead."
+                )
+            _do_save()
+        else:
+            raise
 
     logger.info("Computed and saved: %s", table_name)
     # On Spark Connect, spark.table() returns a lazy reference. The caller's
